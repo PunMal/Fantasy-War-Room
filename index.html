@@ -208,6 +208,15 @@
   /* Chat panel */
   #chatKeySetup .field{ max-width:360px; }
   #tradeBlockInput{ width:100%; font-family:'Inter',sans-serif; resize:vertical; }
+
+  .integrity-ok{ font-size:12.5px; color:var(--turf); }
+  .integrity-issues{
+    background:rgba(193,85,75,0.12); border:1px solid var(--danger); border-radius:8px;
+    padding:12px 14px; font-size:13px;
+  }
+  .integrity-issues-title{ font-weight:700; color:var(--danger); margin-bottom:6px; }
+  .integrity-issues ul{ margin:0; padding-left:18px; }
+  .integrity-issues li{ margin-bottom:4px; }
   #chatMessages{ max-height:360px; overflow-y:auto; display:flex; flex-direction:column; gap:10px; margin-bottom:10px; }
   .chat-msg{ padding:9px 12px; border-radius:8px; font-size:13px; line-height:1.5; max-width:85%; }
   .chat-msg.user{ background:rgba(79,157,61,0.14); border:1px solid var(--turf); align-self:flex-end; }
@@ -621,6 +630,8 @@
       </div>
 
       <div class="panel" id="matchupHeaderPanel"></div>
+
+      <div class="panel" id="integrityCheckPanel"></div>
 
       <div class="panel">
         <h2>Matchup breakdown</h2>
@@ -1834,7 +1845,16 @@
       // Self-heal: if this league was connected before roster_positions was tracked
       // (or Sleeper's own settings changed), refresh it every sync rather than only at connect time.
       if(settings && Array.isArray(settings.roster_positions)){
-        league.rosterPositions = settings.roster_positions.filter(p => p !== 'BN');
+        const freshPositions = settings.roster_positions.filter(p => p !== 'BN');
+        const changed = JSON.stringify(freshPositions) !== JSON.stringify(league.rosterPositions || []);
+        if(changed && league.lineupOverrides && Object.keys(league.lineupOverrides).length){
+          // Overrides are stored by raw slot index — if what that index MEANS has
+          // changed (e.g. FLEX moved from index 8 to index 6), an old override
+          // would now point at the wrong slot entirely. Safer to clear them than
+          // risk silently placing a player somewhere they're not eligible for.
+          league.lineupOverrides = {};
+        }
+        league.rosterPositions = freshPositions;
       }
       if(!Array.isArray(data) || !data.length){
         statusEl.className = 'sync-status err';
@@ -1969,12 +1989,19 @@
     const used = new Set();
     const starters = new Array(slotDefs.length);
 
-    // Pass 1: honor any manual "what-if" swaps for this slot
+    // Pass 1: honor any manual "what-if" swaps for this slot — but only if the
+    // player is actually eligible for it. Overrides are stored by raw slot
+    // index, so if the league's slot order ever changes (or the override is
+    // otherwise stale/corrupted), a mismatched one is ignored here rather than
+    // silently placing e.g. a DST in a FLEX slot.
     slotDefs.forEach((def, idx)=>{
       const overrideId = overrides[idx];
       if(!overrideId) return;
       const p = roster.find(x=>x.sleeperId===overrideId);
-      if(p){ used.add(p.sleeperId); starters[idx] = Object.assign({}, p, { slot: def.label, slotIndex: idx }); }
+      if(!p) return;
+      const eligible = def.pos==='FLEX' ? ['RB','WR','TE'] : [def.pos];
+      if(!eligible.includes(p.pos)) return; // stale/invalid override for this slot — let Pass 2 fill it properly instead
+      used.add(p.sleeperId); starters[idx] = Object.assign({}, p, { slot: def.label, slotIndex: idx });
     });
     // Pass 2: auto-fill every remaining slot with the best still-available eligible player
     slotDefs.forEach((def, idx)=>{
@@ -2467,6 +2494,79 @@
     renderTradeBlockAnalysis(results);
   });
 
+  /* ---------------- Integrity checks — run every render, catch structural bugs automatically ---------------- */
+  function runIntegrityChecks(){
+    const issues = [];
+    if(!league || league.myRosterId==null) return issues;
+    const week = league.week;
+
+    function checkLineup(rosterId, label){
+      const { starters, bench, slotDefs } = computeBestLineup(rosterId, week);
+      const seen = new Set();
+
+      starters.forEach(s=>{
+        if(s._empty) return;
+        // 1. Position eligibility per slot
+        const def = slotDefs.find(d=>d.label===s.slot);
+        if(def){
+          const eligible = def.pos==='FLEX' ? ['RB','WR','TE'] : [def.pos];
+          if(!eligible.includes(s.pos)){
+            issues.push(`${label}: ${s.name} (${s.pos}) is sitting in the ${s.slot} slot, which shouldn't be able to hold a ${s.pos}.`);
+          }
+        }
+        // 2. No player appearing in more than one slot
+        if(seen.has(s.sleeperId)){
+          issues.push(`${label}: ${s.name} appears in more than one starting slot.`);
+        }
+        seen.add(s.sleeperId);
+      });
+
+      // 3. No overlap between starters and bench
+      bench.forEach(b=>{
+        if(seen.has(b.sleeperId)){
+          issues.push(`${label}: ${b.name} appears on the bench and in the starting lineup at the same time.`);
+        }
+      });
+
+      // 4. Every slot got filled with something (even if just an "empty" placeholder — this checks the array itself isn't short)
+      if(starters.length !== slotDefs.length){
+        issues.push(`${label}: expected ${slotDefs.length} starting slots but only computed ${starters.length}.`);
+      }
+    }
+
+    checkLineup(league.myRosterId, 'Your suggested lineup');
+    const wk = league.matchupsByWeek[week];
+    if(wk && wk.oppRosterId){
+      checkLineup(wk.oppRosterId, "Opponent's lineup");
+    }
+
+    // 5. Any active manual override should still point at a player actually on your roster
+    const overrides = (league.lineupOverrides && league.lineupOverrides[week]) || {};
+    const myRosterIds = new Set(enrichRoster(league.myRosterId).map(p=>p.sleeperId));
+    Object.entries(overrides).forEach(([idx, sid])=>{
+      if(!myRosterIds.has(sid)){
+        issues.push(`A manual lineup swap references a player no longer on your roster (slot index ${idx}) — try "Reset to suggested lineup" if this looks wrong.`);
+      }
+    });
+
+    return issues;
+  }
+
+  function renderIntegrityCheck(){
+    const panel = document.getElementById('integrityCheckPanel');
+    if(!league || league.myRosterId==null){ panel.innerHTML = ''; return; }
+    const issues = runIntegrityChecks();
+    if(!issues.length){
+      panel.innerHTML = '<div class="integrity-ok">✓ Integrity check passed — no structural issues found in either lineup this render.</div>';
+      return;
+    }
+    panel.innerHTML = `
+      <div class="integrity-issues">
+        <div class="integrity-issues-title">⚠ Integrity check found ${issues.length} issue${issues.length>1?'s':''}</div>
+        <ul>${issues.map(i=>`<li>${i}</li>`).join('')}</ul>
+      </div>`;
+  }
+
   function renderWeeklyDashboard(){
     if(!league){
       document.getElementById('leagueConnectPanel').classList.remove('hidden');
@@ -2503,6 +2603,7 @@
       ? `Last synced: ${new Date(league.lastSyncedAt).toLocaleString()}`
       : '';
     renderMatchupHeader();
+    renderIntegrityCheck();
     renderThreeColGrid();
     renderMyBench();
     renderTheirBench();
