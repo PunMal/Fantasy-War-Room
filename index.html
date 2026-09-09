@@ -1820,14 +1820,21 @@
     statusEl.className = 'sync-status';
     statusEl.textContent = 'Syncing…';
     try{
-      const [matchupsRes, rostersRes] = await Promise.all([
+      const [matchupsRes, rostersRes, settingsRes] = await Promise.all([
         fetch(`https://api.sleeper.app/v1/league/${league.leagueId}/matchups/${week}`),
-        fetch(`https://api.sleeper.app/v1/league/${league.leagueId}/rosters`)
+        fetch(`https://api.sleeper.app/v1/league/${league.leagueId}/rosters`),
+        fetch(`https://api.sleeper.app/v1/league/${league.leagueId}`)
       ]);
       const data = await matchupsRes.json();
       const freshRosters = await rostersRes.json();
+      const settings = await settingsRes.json();
       if(Array.isArray(freshRosters) && freshRosters.length){
         league.rosters = freshRosters; // always use the current roster/starters, not the stale connect-time snapshot
+      }
+      // Self-heal: if this league was connected before roster_positions was tracked
+      // (or Sleeper's own settings changed), refresh it every sync rather than only at connect time.
+      if(settings && Array.isArray(settings.roster_positions)){
+        league.rosterPositions = settings.roster_positions.filter(p => p !== 'BN');
       }
       if(!Array.isArray(data) || !data.length){
         statusEl.className = 'sync-status err';
