@@ -182,6 +182,41 @@
   .swap-cell{ display:flex; gap:4px; align-items:center; }
   .swap-select{ font-size:11px; padding:3px 5px; max-width:90px; }
 
+  /* Three-column matchup breakdown */
+  .col-headers{
+    display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;
+    margin-bottom:8px; font-size:12px; color:var(--text-dim);
+    text-transform:uppercase; letter-spacing:0.04em; font-weight:600;
+  }
+  @media (max-width:760px){ .col-headers{ display:none; } }
+  .col-row{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-bottom:6px; }
+  @media (max-width:760px){ .col-row{ grid-template-columns:1fr; } }
+  .col-cell{
+    background:var(--panel-2); border:1px solid var(--line); border-radius:6px;
+    padding:8px 10px; font-size:12.5px; min-height:56px;
+  }
+  .col-cell.bye-flag{ border-color:var(--danger); }
+  .col-cell .cc-slot{ font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.04em; }
+  .col-cell .cc-name{ font-weight:600; }
+  .col-cell .cc-meta{ font-size:11px; color:var(--text-dim); margin-top:2px; }
+  .col-cell .cc-edge{ display:inline-block; margin-top:4px; font-size:11px; font-weight:700; padding:1px 6px; border-radius:3px; }
+  .col-cell .cc-edge.mine{ background:rgba(79,157,61,0.18); color:var(--turf); }
+  .col-cell .cc-edge.theirs{ background:rgba(193,85,75,0.18); color:var(--danger); }
+  .col-cell .cc-edge.toss{ background:rgba(232,163,61,0.18); color:var(--amber); }
+  .col-cell.empty-cell{ color:var(--text-dim); display:flex; align-items:center; justify-content:center; }
+
+  /* Chat panel */
+  #chatKeySetup .field{ max-width:360px; }
+  #tradeBlockInput{ width:100%; font-family:'Inter',sans-serif; resize:vertical; }
+  #chatMessages{ max-height:360px; overflow-y:auto; display:flex; flex-direction:column; gap:10px; margin-bottom:10px; }
+  .chat-msg{ padding:9px 12px; border-radius:8px; font-size:13px; line-height:1.5; max-width:85%; }
+  .chat-msg.user{ background:rgba(79,157,61,0.14); border:1px solid var(--turf); align-self:flex-end; }
+  .chat-msg.assistant{ background:var(--panel-2); border:1px solid var(--line); align-self:flex-start; white-space:pre-wrap; }
+  .chat-msg.pending{ color:var(--text-dim); font-style:italic; }
+  .chat-msg.error{ background:rgba(193,85,75,0.14); border:1px solid var(--danger); }
+  .chat-input-row{ display:flex; gap:8px; }
+  .chat-input-row textarea{ flex:1; resize:vertical; font-family:'Inter',sans-serif; }
+
   #scoreboard{
     position:sticky; top:45px; z-index:20;
     background:var(--panel); border-bottom:1px solid var(--line);
@@ -588,17 +623,38 @@
       <div class="panel" id="matchupHeaderPanel"></div>
 
       <div class="panel">
-        <h2>Your live Sleeper lineup</h2>
-        <div class="panel-sub">Pulled directly from Sleeper, exactly as you've set it there right now — this is what's actually synced, not a recommendation. Compare it against your own Sleeper app to confirm the connection is accurate.</div>
-        <div id="liveLineupList"></div>
-        <div class="panel-sub" id="liveLineupTimestamp" style="margin-top:8px;"></div>
+        <h2>Matchup breakdown</h2>
+        <div class="panel-sub">Your live Sleeper lineup, our suggestion, and your opponent's likely lineup — side by side. Edge Score is a heuristic based on rank, live injury status, and bye weeks, shown against your opponent at that same slot — not a calibrated statistical probability.</div>
+        <div class="col-headers">
+          <div>Your live Sleeper lineup</div>
+          <div>Suggested lineup</div>
+          <div>Opponent's lineup</div>
+        </div>
+        <div id="threeColGrid"></div>
+        <div id="h2hOverall"></div>
+        <div class="panel-sub" id="liveLineupTimestamp" style="margin-top:10px;"></div>
       </div>
 
       <div class="panel">
-        <h2>Head-to-head, position by position</h2>
-        <div class="panel-sub">Edge Score is a heuristic based on rank, live injury status, and bye weeks — not a calibrated statistical probability. Treat it as a lean, not a guarantee.</div>
-        <div id="h2hGrid"></div>
-        <div id="h2hOverall"></div>
+        <h2>Ask about your lineup</h2>
+        <div class="panel-sub" id="chatExplainer">
+          This calls the real Anthropic API directly from your browser, using your own API key — so answers can do live web research beyond just Sleeper's data. Two things worth knowing: your key is stored only in <em>this browser</em> (never uploaded to GitHub or included in "Export settings"), and each question uses your own Anthropic account, so it isn't free.
+        </div>
+        <div id="chatKeySetup">
+          <div class="field">
+            <label>Anthropic API key</label>
+            <input type="password" id="anthropicKeyInput" placeholder="sk-ant-...">
+          </div>
+          <button id="saveKeyBtn" class="primary small-btn">Save key to this browser</button>
+        </div>
+        <div id="chatInterface" class="hidden">
+          <div id="chatMessages"></div>
+          <div class="chat-input-row">
+            <textarea id="chatInput" placeholder="e.g. Should I start my WR2 or the free agent I picked up?" rows="2"></textarea>
+            <button id="chatSendBtn" class="primary">Ask</button>
+          </div>
+          <button id="forgetKeyBtn" class="ghost small-btn" style="margin-top:8px;">Forget saved key</button>
+        </div>
       </div>
 
       <div class="panel">
@@ -628,7 +684,16 @@
       <div class="panel">
         <h2>Trade suggestions</h2>
         <div class="panel-sub">Realistic starting points, not final offers — matched so both sides plausibly gain something. You'll still need to actually negotiate these with the other manager.</div>
+        <div class="panel-sub" style="color:var(--amber);">Note: Sleeper doesn't expose an actual "trade block" list through its public data (checked directly — the field it would live in is empty across every team in your league, and the League Chat feed loads over a connection this app can't read), so these are generated from roster surplus/need analysis across the whole league, not from anyone's declared willingness to trade a specific player.</div>
         <div id="tradeSuggestionList"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Trade block watch</h2>
+        <div class="panel-sub">Paste names you see flagged "on the block" in Sleeper's League Chat (one per line — extra lines like "WR - CLE" are ignored automatically) and get a real read on whether each is worth pursuing for your roster.</div>
+        <textarea id="tradeBlockInput" rows="5" placeholder="Jerry Jeudy&#10;Cam Skattebo&#10;Bucky Irving&#10;Omarion Hampton"></textarea>
+        <button id="analyzeTradeBlockBtn" class="primary small-btn" style="margin-top:8px;">Analyze</button>
+        <div id="tradeBlockResults" style="margin-top:12px;"></div>
       </div>
 
       <div class="footer-actions">
@@ -1642,18 +1707,26 @@
     statusEl.className = 'sync-status';
     statusEl.textContent = 'Connecting…';
     try{
-      const [usersRes, rostersRes] = await Promise.all([
+      const [usersRes, rostersRes, settingsRes] = await Promise.all([
         fetch(`https://api.sleeper.app/v1/league/${leagueId}/users`),
-        fetch(`https://api.sleeper.app/v1/league/${leagueId}/rosters`)
+        fetch(`https://api.sleeper.app/v1/league/${leagueId}/rosters`),
+        fetch(`https://api.sleeper.app/v1/league/${leagueId}`)
       ]);
       const users = await usersRes.json();
       const rosters = await rostersRes.json();
+      const settings = await settingsRes.json();
       if(!Array.isArray(users) || !Array.isArray(rosters) || !rosters.length){
         statusEl.className = 'sync-status err';
         statusEl.textContent = 'No league found with that ID — double check it against your league URL.';
         return;
       }
-      league = { leagueId, myRosterId: null, users, rosters, week: 1, matchupsByWeek: {}, lineupOverrides: {} };
+      // roster_positions is the exact, authoritative slot order Sleeper uses for
+      // this league's `starters` arrays — using it (instead of guessing) is what
+      // lets the Live / Suggested / Opponent columns line up row-for-row.
+      const rosterPositions = (settings && Array.isArray(settings.roster_positions))
+        ? settings.roster_positions.filter(p => p !== 'BN')
+        : null;
+      league = { leagueId, myRosterId: null, users, rosters, rosterPositions, week: 1, matchupsByWeek: {}, lineupOverrides: {}, weekData: {} };
       statusEl.className = 'sync-status ok';
       statusEl.textContent = `Connected — found ${rosters.length} teams.`;
 
@@ -1708,6 +1781,39 @@
   });
 
   /* ---------------- Weekly sync (matchup for the selected week) ---------------- */
+  async function fetchWeekExtras(week){
+    try{
+      const [scoreboardRes, projRes] = await Promise.all([
+        fetch(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?week=${week}&seasontype=2&year=2026`),
+        fetch(`https://api.sleeper.app/v1/projections/nfl/regular/2026/${week}`)
+      ]);
+      const scoreboard = await scoreboardRes.json();
+      const projData = await projRes.json();
+
+      const gameInfo = {};
+      (scoreboard.events||[]).forEach(ev=>{
+        const comp = ev.competitions[0];
+        const statusDetail = comp.status && comp.status.type && comp.status.type.shortDetail;
+        comp.competitors.forEach(c=>{
+          let team = c.team.abbreviation;
+          if(team==='WSH') team = 'WAS'; // reconcile ESPN's code to this app's convention
+          gameInfo[team] = { kickoffLabel: statusDetail || null };
+        });
+      });
+
+      // Match your league's actual scoring format so "projected points" means the same thing everywhere else in the app
+      const scoreKey = cfg && cfg.scoring==='half' ? 'pts_half_ppr' : (cfg && cfg.scoring==='standard' ? 'pts_std' : 'pts_ppr');
+      const projections = {};
+      Object.entries(projData||{}).forEach(([id, stats])=>{
+        if(stats && stats[scoreKey]!=null) projections[id] = Math.round(stats[scoreKey]*10)/10;
+      });
+
+      return { gameInfo, projections };
+    } catch(e){
+      return { gameInfo:{}, projections:{} };
+    }
+  }
+
   async function syncWeek(week){
     if(!league) return;
     const statusEl = document.getElementById('weeklySyncStatus');
@@ -1733,6 +1839,8 @@
       league.matchupsByWeek[week] = { oppRosterId: opp ? opp.roster_id : null };
       league.week = week;
       await fetchSleeperPlayerDB(false);
+      league.weekData = league.weekData || {};
+      league.weekData[week] = await fetchWeekExtras(week);
       league.lastSyncedAt = Date.now();
       statusEl.className = 'sync-status ok';
       statusEl.textContent = opp ? `Synced — Week ${week} matchup found.` : `Synced, but no opponent found for Week ${week} (bye week in your league, or matchups not set yet).`;
@@ -1755,6 +1863,7 @@
     const roster = league.rosters.find(r=>r.roster_id===rosterId);
     if(!roster) return [];
     const week = league.week;
+    const wd = league.weekData && league.weekData[week];
     return (roster.players||[]).map(sid=>{
       const sp = sleeperPlayerDB[sid];
       const name = sp ? sp.name : (sid==='0' ? 'Empty slot' : `Unknown (#${sid})`);
@@ -1763,6 +1872,8 @@
       const injuryRaw = sp ? sp.injury_status : '';
       const byeWeek = team ? (BYE_WEEKS[team] || null) : null;
       const weekGame = (team && SCHEDULE[team]) ? SCHEDULE[team][week] : null; // [opponentTeam, isHome]
+      const gameInfo = (wd && wd.gameInfo && team) ? wd.gameInfo[team] : null;
+      const projPts = (wd && wd.projections) ? wd.projections[sid] : null;
       // Try to inherit rank/adjust from your own board by matching name
       const boardMatch = players.find(p => normalizeName(p.name) === normalizeName(name));
       const rank = boardMatch ? boardMatch.rank : (sp ? sp.search_rank + 300 : 9999); // unranked-on-your-board players sort behind your real board
@@ -1770,9 +1881,28 @@
       return {
         sleeperId: sid, name, pos, team, injury: classifySleeperInjury(injuryRaw), injuryRaw, byeWeek, rank, adjust,
         opponent: weekGame ? weekGame[0] : null,
-        isHome: weekGame ? !!weekGame[1] : null
+        isHome: weekGame ? !!weekGame[1] : null,
+        kickoffLabel: gameInfo ? gameInfo.kickoffLabel : null,
+        projPts: (projPts!=null) ? projPts : null
       };
     }).filter(p => p.pos !== '?' || p.name !== 'Empty slot');
+  }
+
+  // The "Your live Sleeper lineup" column — mapped 1:1 against getWeeklySlotDefs(),
+  // so it lines up row-for-row with the Suggested and Opponent columns.
+  function getLiveStarters(rosterId, week){
+    if(!league) return [];
+    const roster = league.rosters.find(r=>r.roster_id===rosterId);
+    if(!roster || !roster.starters) return [];
+    const enriched = enrichRoster(rosterId);
+    const slotDefs = getWeeklySlotDefs();
+    return roster.starters.map((sid, idx)=>{
+      const def = slotDefs[idx] || { label: `Slot ${idx+1}` };
+      if(sid==='0') return { slot: def.label, name:'(empty slot)', _empty:true };
+      const p = enriched.find(x=>x.sleeperId===sid);
+      if(!p) return { slot: def.label, name:`Unknown (#${sid})`, _empty:true };
+      return Object.assign({}, p, { slot: def.label });
+    });
   }
 
   function scoreForLineup(p, week){
@@ -1800,6 +1930,25 @@
     return defs;
   }
 
+  // Uses the league's real, authoritative roster_positions order (fetched at
+  // connect time) when available — this is what guarantees the Live Sleeper
+  // column lines up row-for-row with the Suggested and Opponent columns,
+  // rather than relying on your manually-entered Draft Room roster shape.
+  function getWeeklySlotDefs(){
+    if(!league || !league.rosterPositions) return getSlotDefs();
+    const counts = {};
+    const defs = [];
+    league.rosterPositions.forEach(raw=>{
+      const pos = raw === 'DEF' ? 'DST' : raw;
+      counts[pos] = (counts[pos]||0) + 1;
+      defs.push({ pos, n: counts[pos] });
+    });
+    // second pass to add final numbering only where a position appears more than once
+    const totals = {};
+    defs.forEach(d=> totals[d.pos] = (totals[d.pos]||0)+1);
+    return defs.map(d => ({ pos: d.pos, label: totals[d.pos]>1 ? `${d.pos}${d.n}` : d.pos }));
+  }
+
   // Manual overrides only ever apply to YOUR roster — there's no reason to
   // let the app second-guess itself on the opponent's likely lineup.
   function computeBestLineup(rosterId, week){
@@ -1809,7 +1958,7 @@
     const isMine = league && rosterId === league.myRosterId;
     const overrides = (isMine && league.lineupOverrides && league.lineupOverrides[week]) || {};
 
-    const slotDefs = getSlotDefs();
+    const slotDefs = getWeeklySlotDefs();
     const used = new Set();
     const starters = new Array(slotDefs.length);
 
@@ -1944,37 +2093,6 @@
   }
 
   /* ---------------- Rendering ---------------- */
-  function renderLiveSleeperLineup(){
-    const el = document.getElementById('liveLineupList');
-    const tsEl = document.getElementById('liveLineupTimestamp');
-    if(!league || league.myRosterId==null){ el.innerHTML=''; tsEl.textContent=''; return; }
-    const roster = league.rosters.find(r=>r.roster_id===league.myRosterId);
-    if(!roster || !roster.starters || !roster.starters.length){
-      el.innerHTML = '<div class="panel-sub">Sleeper hasn\'t returned starters for this roster yet.</div>';
-      tsEl.textContent = '';
-      return;
-    }
-    const week = league.week;
-    el.innerHTML = roster.starters.map(sid=>{
-      if(sid==='0'){ return `<div class="bench-row"><span style="color:var(--text-dim);">(empty slot)</span></div>`; }
-      const sp = sleeperPlayerDB[sid];
-      if(!sp){ return `<div class="bench-row"><span>Unknown player (#${sid}) — try "Refresh player data"</span></div>`; }
-      const byeWeek = sp.team ? (BYE_WEEKS[sp.team] || null) : null;
-      const injury = classifySleeperInjury(sp.injury_status);
-      const tags = [];
-      if(byeWeek === week) tags.push('<span class="tag injury-lt">BYE this week</span>');
-      else if(injury==='LT') tags.push('<span class="tag injury-lt">Long-term</span>');
-      else if(injury==='Q') tags.push('<span class="tag injury-q">Questionable</span>');
-      return `<div class="bench-row">
-        <span>${sp.name} <span class="pos-pill">${sp.pos}</span></span>
-        <span class="lineup-meta">${sp.team||'—'} ${tags.join('')}</span>
-      </div>`;
-    }).join('');
-    tsEl.textContent = league.lastSyncedAt
-      ? `Last synced: ${new Date(league.lastSyncedAt).toLocaleString()}`
-      : '';
-  }
-
   function renderMatchupHeader(){
     const panel = document.getElementById('matchupHeaderPanel');
     if(!league || league.myRosterId==null){ panel.innerHTML=''; return; }
@@ -1990,52 +2108,18 @@
     } else if(wk){
       oppName = 'Bye week / no opponent';
     }
-    panel.innerHTML = `
-      <div class="matchup-title">Week ${week}: ${myName} vs ${oppName}</div>
-      <div class="matchup-sub">Lineup suggestions weigh your board rank, live injury status from Sleeper, bye weeks, and each player's real opponent this week. Once games are underway and there's real defensive performance data, ask me to layer in matchup-difficulty grading and weekly stats too — grading that off preseason opinion instead would do more harm than good.</div>
-    `;
-  }
-
-  function lineupRowHtml(p, isStarter){
-    if(p._empty){
-      return `<div class="lineup-row"><span class="lineup-slot">${p.slot}</span><span class="lineup-name" style="color:var(--text-dim);">${p.name}</span></div>`;
-    }
-    const byeFlag = p.byeWeek === (league?league.week:null);
-    const cls = 'lineup-row ' + (isStarter?'starter':'bench') + (byeFlag?' bye-flag':'');
-    const tags = [];
-    if(byeFlag) tags.push('<span class="tag injury-lt">BYE this week</span>');
-    else if(p.injury==='LT') tags.push('<span class="tag injury-lt">Long-term</span>');
-    else if(p.injury==='Q') tags.push('<span class="tag injury-q">Questionable</span>');
-    const oppText = p.opponent ? ` · ${p.isHome?'vs':'@'} ${p.opponent}` : '';
-    return `
-      <div class="${cls}">
-        <span class="lineup-slot">${p.slot||p.pos}</span>
-        <span class="lineup-name">${p.name}</span>
-        <span class="lineup-meta">${p.pos} · ${p.team||'—'}${oppText}${p.byeWeek?` · bye wk ${p.byeWeek}`:''}</span>
-        ${tags.join('')}
-      </div>`;
+    panel.innerHTML = `<div class="matchup-title">Week ${week}: ${myName} vs ${oppName}</div>`;
   }
 
   // Heuristic "Edge Score": converts a score gap into a lean, using a smooth
   // curve so it never claims false certainty (capped 3%-97%). This is NOT a
   // calibrated win probability — there's no real projections/points data
-  // behind it yet, just rank + injury + bye. Framed and labeled as such
-  // everywhere it's shown.
+  // driving the underlying score yet, just rank + injury + bye. Framed and
+  // labeled as such everywhere it's shown.
   function edgePercent(myScore, theirScore){
     const diff = myScore - theirScore;
     const raw = 50 + 50 * Math.tanh(diff / 120);
     return Math.max(3, Math.min(97, Math.round(raw)));
-  }
-
-  function suggestionFor(mine, theirs, week){
-    if(!mine || mine._empty) return 'You have no eligible player for this slot at all — check the free agent list.';
-    if(mine.byeWeek === week) return `${mine.name} is on bye — start someone else here if you have any alternative, even a weaker one.`;
-    if(mine.injury === 'LT') return `${mine.name} is flagged long-term injured — check the free agent list for a healthy replacement at this position.`;
-    if(mine.injury === 'Q') return `${mine.name} is questionable — worth checking practice reports closer to game time before locking this in.`;
-    if(theirs && !theirs._empty && (theirs.byeWeek===week || theirs.injury==='LT')){
-      return `Their starter here has a real issue too (bye or long-term injury) — this may be an easier win than the rank gap alone suggests.`;
-    }
-    return 'Mostly a straightforward rank gap — this will get more accurate once real weekly performance data exists rather than just preseason rank.';
   }
 
   function computeMatchupComparison(){
@@ -2043,76 +2127,82 @@
     const wk = league.matchupsByWeek[league.week];
     if(!wk || !wk.oppRosterId) return null;
 
-    const mine = computeBestLineup(league.myRosterId, league.week);
-    const theirs = computeBestLineup(wk.oppRosterId, league.week);
+    const week = league.week;
+    const mine = computeBestLineup(league.myRosterId, week);
+    const theirs = computeBestLineup(wk.oppRosterId, week);
+    const live = getLiveStarters(league.myRosterId, week);
 
     const rows = mine.starters.map((mp, i)=>{
       const tp = theirs.starters[i] || null;
-      const myScore = mp._empty ? -1000 : scoreForLineup(mp, league.week);
-      const theirScore = (tp && !tp._empty) ? scoreForLineup(tp, league.week) : -1000;
-      const pct = edgePercent(myScore, theirScore);
-      return { slot: mp.slot, mine: mp, theirs: tp, myPct: pct, theirPct: 100-pct };
+      const lp = live[i] || null;
+      const myScore = mp._empty ? -1000 : scoreForLineup(mp, week);
+      const theirScore = (tp && !tp._empty) ? scoreForLineup(tp, week) : -1000;
+      const liveScore = (lp && !lp._empty) ? scoreForLineup(lp, week) : -1000;
+      return {
+        slot: mp.slot, live: lp, suggested: mp, theirs: tp,
+        suggestedPct: edgePercent(myScore, theirScore),
+        livePct: edgePercent(liveScore, theirScore)
+      };
     });
 
-    const overallPct = Math.round(rows.reduce((sum,r)=>sum+r.myPct,0) / rows.length);
-    return { rows, overallPct, myBench: mine.bench };
+    const overallSuggestedPct = Math.round(rows.reduce((s,r)=>s+r.suggestedPct,0) / rows.length);
+    const overallLivePct = Math.round(rows.reduce((s,r)=>s+r.livePct,0) / rows.length);
+    return { rows, overallSuggestedPct, overallLivePct };
   }
 
-  function h2hRowHtml(row, week){
-    const myBye = row.mine && !row.mine._empty && row.mine.byeWeek === week;
-    const rowCls = 'h2h-row' + (myBye ? ' bye-flag' : '');
-
-    function sideHtml(p, side){
-      if(!p || p._empty) return `<div class="h2h-side ${side}" style="color:var(--text-dim);">(empty)</div>`;
-      const bye = p.byeWeek === week;
-      const oppText = p.opponent ? ` · ${p.isHome?'vs':'@'} ${p.opponent}` : '';
-      const tags = [];
-      if(bye) tags.push('<span class="tag injury-lt">BYE</span>');
-      else if(p.injury==='LT') tags.push('<span class="tag injury-lt">Long-term</span>');
-      else if(p.injury==='Q') tags.push('<span class="tag injury-q">Q</span>');
-      return `<div class="h2h-side ${side}">
-        <div class="lineup-name">${p.name}</div>
-        <div class="lineup-meta">${p.pos} · ${p.team||'—'}${oppText}</div>
-        ${tags.join('')}
-      </div>`;
+  function colCellHtml(p, week, edgePct){
+    if(!p || p._empty){
+      return `<div class="col-cell empty-cell">${(p && p.name) ? p.name : '(empty)'}</div>`;
     }
-
-    const edgeClass = row.myPct > 55 ? 'mine' : (row.myPct < 45 ? 'theirs' : 'toss');
-
-    return `
-      <div class="${rowCls}">
-        <div class="h2h-top">
-          ${sideHtml(row.mine, 'mine')}
-          <div class="h2h-edge">
-            <div class="h2h-slot-label">${row.slot}</div>
-            <div class="h2h-edge-pct ${edgeClass}">${row.myPct}%</div>
-            <div class="h2h-edge-label">your edge</div>
-          </div>
-          ${sideHtml(row.theirs, 'theirs')}
-        </div>
-        <div class="h2h-suggestion">${suggestionFor(row.mine, row.theirs, week)}</div>
-      </div>`;
+    const bye = p.byeWeek === week;
+    const oppText = p.opponent ? ` · ${p.isHome?'vs':'@'} ${p.opponent}` : '';
+    const kickoff = p.kickoffLabel ? ` · ${p.kickoffLabel}` : '';
+    const proj = (p.projPts!=null) ? ` · Proj ${p.projPts}` : '';
+    const tags = [];
+    if(bye) tags.push('<span class="tag injury-lt">BYE</span>');
+    else if(p.injury==='LT') tags.push('<span class="tag injury-lt">LT</span>');
+    else if(p.injury==='Q') tags.push('<span class="tag injury-q">Q</span>');
+    const edgeCls = edgePct==null ? '' : (edgePct>55?'mine':(edgePct<45?'theirs':'toss'));
+    const edgeHtml = (edgePct!=null) ? `<div class="cc-edge ${edgeCls}">${edgePct}% edge</div>` : '';
+    return `<div class="col-cell${bye?' bye-flag':''}">
+      <div class="cc-slot">${p.slot||p.pos}</div>
+      <div class="cc-name">${p.name} <span class="pos-pill">${p.pos}</span></div>
+      <div class="cc-meta">${p.team||'—'}${oppText}${kickoff}${proj}</div>
+      ${tags.join('')}
+      ${edgeHtml}
+    </div>`;
   }
 
-  function renderHeadToHead(){
-    const gridEl = document.getElementById('h2hGrid');
+  function renderThreeColGrid(){
+    const gridEl = document.getElementById('threeColGrid');
     const overallEl = document.getElementById('h2hOverall');
     const comparison = computeMatchupComparison();
     if(!comparison){
-      gridEl.innerHTML = '<div class="panel-sub">Sync a week with a valid opponent to see the head-to-head breakdown.</div>';
+      gridEl.innerHTML = '<div class="panel-sub">Sync a week with a valid opponent to see the matchup breakdown.</div>';
       overallEl.innerHTML = '';
       return;
     }
-    gridEl.innerHTML = comparison.rows.map(r=>h2hRowHtml(r, league.week)).join('');
+    const week = league.week;
+    gridEl.innerHTML = comparison.rows.map(r => `
+      <div class="col-row">
+        ${colCellHtml(r.live, week, r.livePct)}
+        ${colCellHtml(r.suggested, week, r.suggestedPct)}
+        ${colCellHtml(r.theirs, week, null)}
+      </div>
+    `).join('');
 
-    const pct = comparison.overallPct;
-    const cls = pct > 55 ? '' : (pct < 45 ? 'underdog' : 'toss');
-    const label = pct > 60 ? 'Favored' : pct > 52 ? 'Slight favorite' : pct >= 48 ? 'Toss-up' : pct >= 40 ? 'Slight underdog' : 'Underdog';
-    overallEl.innerHTML = `
-      <div class="h2h-overall ${cls}">
+    function overallBlock(pct, label){
+      const cls = pct > 55 ? '' : (pct < 45 ? 'underdog' : 'toss');
+      const lbl = pct > 60 ? 'Favored' : pct > 52 ? 'Slight favorite' : pct >= 48 ? 'Toss-up' : pct >= 40 ? 'Slight underdog' : 'Underdog';
+      return `<div class="h2h-overall ${cls}" style="flex:1; min-width:200px;">
         <div class="h2h-overall-pct">${pct}%</div>
-        <div class="h2h-overall-label">Overall Edge Score — ${label}. Average of the position-by-position leans above, not a calibrated win probability.</div>
+        <div class="h2h-overall-label">${label} — ${lbl}</div>
       </div>`;
+    }
+    overallEl.innerHTML = `<div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:10px;">
+      ${overallBlock(comparison.overallLivePct, 'Your live Sleeper lineup')}
+      ${overallBlock(comparison.overallSuggestedPct, 'Suggested lineup')}
+    </div>`;
   }
 
   function eligibleSlotsFor(player, slotDefs){
@@ -2204,7 +2294,30 @@
       el.innerHTML = '<div class="panel-sub">No clear mutual-fit trade found right now — either your roster is fairly balanced, or no other team\'s surplus/need lines up with yours. Check back after a few weeks of adds/drops shift things.</div>';
       return;
     }
-    el.innerHTML = suggestions.map(s=>`
+
+    // Quick-scan summary: unique players worth offering vs. targeting, deduped across all partner matches
+    const offerMap = new Map(), targetMap = new Map();
+    suggestions.forEach(s=>{
+      offerMap.set(s.give.sleeperId, s.give);
+      targetMap.set(s.get.sleeperId, { player: s.get, from: s.partnerName });
+    });
+
+    const summaryHtml = `
+      <div class="trade-card" style="background:var(--panel);">
+        <div class="trade-card-partner">Quick scan</div>
+        <div class="trade-sides">
+          <div class="trade-side">
+            <div class="trade-side-label">Consider putting on the block</div>
+            ${[...offerMap.values()].map(p=>`${p.name} (${p.pos}, rank ${p.rank})`).join('<br>')}
+          </div>
+          <div class="trade-side">
+            <div class="trade-side-label">Worth targeting on other rosters</div>
+            ${[...targetMap.values()].map(t=>`${t.player.name} (${t.player.pos}, rank ${t.player.rank}) — ${t.from}`).join('<br>')}
+          </div>
+        </div>
+      </div>`;
+
+    el.innerHTML = summaryHtml + suggestions.map(s=>`
       <div class="trade-card">
         <div class="trade-card-partner">${s.partnerName}</div>
         <div class="trade-sides">
@@ -2222,6 +2335,130 @@
       </div>
     `).join('');
   }
+
+  /* ---------------- Trade block watch (manual paste, since Sleeper's real trade-block feed isn't reachable) ---------------- */
+  function parseTradeBlockNames(text){
+    const posCodes = new Set(['QB','RB','WR','TE','K','DST','DEF']);
+    const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+    const names = [];
+    lines.forEach(line=>{
+      if(/^on the block$/i.test(line)) return;
+      // Skip chat-feed noise: timestamps, "reply", full announcement sentences, anything with a colon
+      if(/\breply\b/i.test(line)) return;
+      if(/\b\d+\s*(second|minute|hour|day|week)s?\s*ago\b/i.test(line)) return;
+      if(/trade block/i.test(line)) return;
+      if(line.includes(':')) return;
+      // Skip standalone "POS - TEAM" continuation lines (e.g. "WR - CLE")
+      const posOnly = line.match(/^([A-Z]{1,3})\s*-\s*[A-Z]{2,4}$/);
+      if(posOnly && posCodes.has(posOnly[1])) return;
+      // Strip a trailing "(POS - TEAM)" or "POS - TEAM" if it's attached to the same line as the name
+      const cleaned = line.replace(/\(?\b(QB|RB|WR|TE|K|DST|DEF)\b\s*-\s*[A-Z]{2,4}\)?\s*$/, '').trim();
+      if(cleaned) names.push(cleaned);
+    });
+    return [...new Set(names)];
+  }
+
+  function findPlayerAcrossLeague(name){
+    if(!league) return null;
+    const target = normalizeName(name);
+    for(const roster of league.rosters){
+      const enriched = enrichRoster(roster.roster_id);
+      const match = enriched.find(p => normalizeName(p.name) === target);
+      if(match) return { player: match, rosterId: roster.roster_id };
+    }
+    return null;
+  }
+
+  function analyzeTradeBlockPlayer(name){
+    const found = findPlayerAcrossLeague(name);
+    if(!found){
+      return { name, notFound: true };
+    }
+    const { player, rosterId } = found;
+    if(rosterId === league.myRosterId){
+      return { name, isMine: true, player };
+    }
+    const partnerName = teamLabel(rosterId);
+    const myProfile = positionProfile(league.myRosterId);
+    const pos = TRADE_POSITIONS.includes(player.pos) ? player.pos : null;
+    const profileAtPos = pos ? myProfile[pos] : null;
+
+    let verdict = 'unclear', rationale;
+    if(!profileAtPos){
+      verdict = 'unclear';
+      rationale = `${player.pos} isn't a position this app tracks surplus/need for — use your own judgment here.`;
+    } else if(profileAtPos.status === 'need'){
+      verdict = 'pursue';
+      rationale = `You're at or below your starting requirement at ${pos} — this would fill a real need, not just add depth.`;
+    } else if(profileAtPos.status === 'surplus'){
+      verdict = 'pass';
+      rationale = `You already have more ${pos} depth than your lineup needs — this would mostly sit on your bench unless it's a clear talent upgrade.`;
+    } else {
+      const posRoster = myProfile[pos].players;
+      const weakestStarter = posRoster[myProfile[pos].starters - 1];
+      if(weakestStarter && player.rank < weakestStarter.rank){
+        verdict = 'pursue';
+        rationale = `${pos} is balanced on your roster, but this player (rank ${player.rank}) would outrank your current weakest starter there (${weakestStarter.name}, rank ${weakestStarter.rank}) — a real upgrade, not just a lateral move.`;
+      } else {
+        verdict = 'unclear';
+        rationale = `${pos} is balanced on your roster and this isn't a clear upgrade over what you already have there — only worth it if the return cost is low.`;
+      }
+    }
+
+    // What you could realistically offer in return
+    let offer = null;
+    if(pos){
+      const mySurplusPositions = TRADE_POSITIONS.filter(p => myProfile[p].status==='surplus');
+      mySurplusPositions.forEach(givePos=>{
+        const tradeable = myProfile[givePos].players.slice(myProfile[givePos].starters);
+        tradeable.forEach(mine=>{
+          const diff = Math.abs(mine.rank - player.rank);
+          if(!offer || diff < offer.diff) offer = { diff, give: mine, givePos };
+        });
+      });
+    }
+
+    return { name, player, partnerName, verdict, rationale, offer };
+  }
+
+  function renderTradeBlockAnalysis(results){
+    const el = document.getElementById('tradeBlockResults');
+    if(!results.length){ el.innerHTML = ''; return; }
+    el.innerHTML = results.map(r=>{
+      if(r.notFound){
+        return `<div class="trade-card"><div class="trade-card-partner">${r.name}</div>
+          <div class="trade-rationale">Couldn't find this player on any roster in your league — check the spelling, or they may already be a free agent (in which case just add them, no trade needed).</div></div>`;
+      }
+      if(r.isMine){
+        return `<div class="trade-card"><div class="trade-card-partner">${r.name}</div>
+          <div class="trade-rationale">This is already on your own roster.</div></div>`;
+      }
+      const verdictColor = r.verdict==='pursue' ? 'var(--turf)' : r.verdict==='pass' ? 'var(--danger)' : 'var(--amber)';
+      const verdictLabel = r.verdict==='pursue' ? 'Worth pursuing' : r.verdict==='pass' ? 'Not a priority' : 'Depends';
+      const offerHtml = r.offer
+        ? `<div class="trade-sides" style="margin-top:8px;">
+            <div class="trade-side"><div class="trade-side-label">Consider offering</div>${r.offer.give.name} (${r.offer.givePos}, rank ${r.offer.give.rank})</div>
+            <div class="trade-arrow">⇄</div>
+            <div class="trade-side"><div class="trade-side-label">Target</div>${r.player.name} (${r.player.pos}, rank ${r.player.rank})</div>
+          </div>`
+        : '';
+      return `<div class="trade-card">
+        <div class="trade-card-partner">${r.player.name} <span class="pos-pill">${r.player.pos}</span> — owned by ${r.partnerName}</div>
+        <div class="tag" style="background:transparent; border:1px solid ${verdictColor}; color:${verdictColor};">${verdictLabel}</div>
+        <div class="trade-rationale">${r.rationale}</div>
+        ${offerHtml}
+      </div>`;
+    }).join('');
+  }
+
+  document.getElementById('analyzeTradeBlockBtn').addEventListener('click', function(){
+    if(!league || league.myRosterId==null){ alert('Connect your league and select your team first.'); return; }
+    const text = document.getElementById('tradeBlockInput').value;
+    const names = parseTradeBlockNames(text);
+    if(!names.length){ alert('Paste at least one player name first.'); return; }
+    const results = names.map(analyzeTradeBlockPlayer);
+    renderTradeBlockAnalysis(results);
+  });
 
   function renderWeeklyDashboard(){
     if(!league){
@@ -2255,14 +2492,168 @@
     if(sleeperPlayerDBFetchedAt){
       document.getElementById('playerDbStatus').textContent = `Player data current as of ${new Date(sleeperPlayerDBFetchedAt).toLocaleTimeString()}.`;
     }
+    document.getElementById('liveLineupTimestamp').textContent = league.lastSyncedAt
+      ? `Last synced: ${new Date(league.lastSyncedAt).toLocaleString()}`
+      : '';
     renderMatchupHeader();
-    renderLiveSleeperLineup();
-    renderHeadToHead();
+    renderThreeColGrid();
     renderMyBench();
     renderTheirBench();
     renderFreeAgents();
     renderTradeSuggestions();
   }
+
+  /* ---------------- Ask about your lineup (chat) ---------------- */
+  // The API key lives ONLY in this browser's localStorage, under its own key —
+  // it is never read by saveState/export, so it can't end up in the settings
+  // JSON or get accidentally committed to the (public) GitHub repo.
+  const ANTHROPIC_KEY_STORAGE = 'draftWarRoom_anthropicKey_v1';
+  let chatHistory = []; // in-memory only, cleared on page reload — kept deliberately simple
+
+  function refreshChatUiState(){
+    const hasKey = !!localStorage.getItem(ANTHROPIC_KEY_STORAGE);
+    document.getElementById('chatKeySetup').classList.toggle('hidden', hasKey);
+    document.getElementById('chatInterface').classList.toggle('hidden', !hasKey);
+  }
+
+  document.getElementById('saveKeyBtn').addEventListener('click', function(){
+    const val = document.getElementById('anthropicKeyInput').value.trim();
+    if(!val){ alert('Paste your Anthropic API key first.'); return; }
+    localStorage.setItem(ANTHROPIC_KEY_STORAGE, val);
+    document.getElementById('anthropicKeyInput').value = '';
+    refreshChatUiState();
+  });
+
+  document.getElementById('forgetKeyBtn').addEventListener('click', function(){
+    if(!confirm('Remove the saved API key from this browser? You\'ll need to paste it again to keep asking questions.')) return;
+    localStorage.removeItem(ANTHROPIC_KEY_STORAGE);
+    chatHistory = [];
+    document.getElementById('chatMessages').innerHTML = '';
+    refreshChatUiState();
+  });
+
+  function addChatMessage(role, text, pending){
+    const box = document.getElementById('chatMessages');
+    const id = 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+    const div = document.createElement('div');
+    div.className = 'chat-msg ' + role + (pending ? ' pending' : '');
+    div.id = id;
+    div.textContent = text;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+    return id;
+  }
+
+  function updateChatMessage(id, text, cls){
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.textContent = text;
+    el.className = 'chat-msg ' + (cls || 'assistant');
+    document.getElementById('chatMessages').scrollTop = document.getElementById('chatMessages').scrollHeight;
+  }
+
+  // Summarizes exactly what's currently on screen for this matchup, so the
+  // model is answering about your real roster/opponent, not guessing.
+  function buildLineupContext(){
+    if(!league || league.myRosterId==null) return 'No league connected yet.';
+    const week = league.week;
+    const comparison = computeMatchupComparison();
+    const lines = [`Week ${week} fantasy football matchup. Scoring: ${cfg ? cfg.scoring : 'unknown'}.`];
+
+    if(comparison){
+      lines.push('\nYour live Sleeper starters vs your opponent (same slot order):');
+      comparison.rows.forEach(r=>{
+        const fmt = p => p && !p._empty
+          ? `${p.name} (${p.pos}, ${p.team||'?'}${p.opponent?`, ${p.isHome?'vs':'@'} ${p.opponent}`:''}${p.injury?`, ${p.injury==='LT'?'long-term injury':'questionable'}`:''}${p.byeWeek===week?', BYE THIS WEEK':''}${p.projPts!=null?`, proj ${p.projPts}pts`:''})`
+          : '(empty)';
+        lines.push(`- ${r.slot}: You (live): ${fmt(r.live)} | You (suggested): ${fmt(r.suggested)} | Opponent: ${fmt(r.theirs)}`);
+      });
+    } else {
+      lines.push('No synced opponent for this week yet.');
+    }
+
+    const { bench: myBench } = computeBestLineup(league.myRosterId, week);
+    if(myBench.length){
+      lines.push('\nYour bench:');
+      myBench.forEach(p=>{
+        lines.push(`- ${p.name} (${p.pos}, ${p.team||'?'}${p.injury?`, ${p.injury}`:''}${p.byeWeek===week?', BYE':''})`);
+      });
+    }
+
+    const agents = computeFreeAgents().slice(0, 15);
+    if(agents.length){
+      lines.push('\nTop available free agents (unrostered anywhere in the league):');
+      agents.forEach(a=> lines.push(`- ${a.name} (${a.pos}, ${a.team||'?'})`));
+    }
+
+    return lines.join('\n');
+  }
+
+  async function sendChatMessage(){
+    const input = document.getElementById('chatInput');
+    const question = input.value.trim();
+    if(!question) return;
+    const apiKey = localStorage.getItem(ANTHROPIC_KEY_STORAGE);
+    if(!apiKey){ refreshChatUiState(); return; }
+
+    input.value = '';
+    addChatMessage('user', question);
+    const pendingId = addChatMessage('assistant', 'Thinking (this may take a few seconds if it needs to search the web)…', true);
+
+    const contextText = buildLineupContext();
+    const userTurn = { role: 'user', content: `Fantasy football lineup context:\n${contextText}\n\nQuestion: ${question}` };
+
+    try{
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 1200,
+          messages: chatHistory.concat([userTurn]),
+          tools: [{ type: 'web_search_20250305', name: 'web_search' }]
+        })
+      });
+
+      if(!res.ok){
+        const errBody = await res.text();
+        let msg = `Request failed (HTTP ${res.status}).`;
+        if(res.status===401) msg = 'That API key was rejected — double check it was copied correctly.';
+        else if(res.status===429) msg = 'Rate limited by Anthropic — wait a moment and try again.';
+        updateChatMessage(pendingId, msg + ' ' + errBody.slice(0,150), 'error');
+        return;
+      }
+
+      const data = await res.json();
+      const textParts = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text);
+      const answer = textParts.join('\n\n').trim() || '(No text in the response — it may have only returned search results.)';
+      updateChatMessage(pendingId, answer, 'assistant');
+
+      chatHistory.push(userTurn);
+      chatHistory.push({ role: 'assistant', content: answer });
+      // Keep only the last few exchanges — each turn re-sends the full lineup
+      // context, so an unbounded history would balloon token usage/cost fast.
+      if(chatHistory.length > 8) chatHistory = chatHistory.slice(-8);
+
+    } catch(e){
+      updateChatMessage(pendingId, `Could not reach the Anthropic API (${e.message}). This may be a network issue or a browser extension blocking the request.`, 'error');
+    }
+  }
+
+  document.getElementById('chatSendBtn').addEventListener('click', sendChatMessage);
+  document.getElementById('chatInput').addEventListener('keydown', function(e){
+    if(e.key === 'Enter' && !e.shiftKey){
+      e.preventDefault();
+      sendChatMessage();
+    }
+  });
+
+  refreshChatUiState();
 
   /* ---------------- Persistence (survives refreshes and file updates) ---------------- */
   const STORAGE_KEY = 'draftWarRoom_state_v1';
