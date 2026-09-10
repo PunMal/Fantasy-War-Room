@@ -652,7 +652,7 @@
         <div class="col-headers">
           <div>Your live Sleeper lineup</div>
           <div>Suggested lineup</div>
-          <div>Opponent's lineup</div>
+          <div>Opponent's live lineup</div>
         </div>
         <div id="threeColGrid"></div>
         <div id="h2hOverall"></div>
@@ -2243,11 +2243,11 @@
 
     const week = league.week;
     const mine = computeBestLineup(league.myRosterId, week);
-    const theirs = computeBestLineup(wk.oppRosterId, week);
+    const theirs = getLiveStarters(wk.oppRosterId, week); // their actual live Sleeper starters, not our guess at their lineup
     const live = getLiveStarters(league.myRosterId, week);
 
     const rows = mine.starters.map((mp, i)=>{
-      const tp = theirs.starters[i] || null;
+      const tp = theirs[i] || null;
       const lp = live[i] || null;
       const myScore = mp._empty ? -1000 : scoreForLineup(mp, week);
       const theirScore = (tp && !tp._empty) ? scoreForLineup(tp, week) : -1000;
@@ -2360,7 +2360,8 @@
     const el = document.getElementById('theirBenchList');
     const wk = league ? league.matchupsByWeek[league.week] : null;
     if(!wk || !wk.oppRosterId){ el.innerHTML = '<div class="panel-sub">Sync a week to see this.</div>'; return; }
-    const { bench } = computeBestLineup(wk.oppRosterId, league.week);
+    const liveStarterIds = new Set(getLiveStarters(wk.oppRosterId, league.week).filter(p=>!p._empty).map(p=>p.sleeperId));
+    const bench = enrichRoster(wk.oppRosterId).filter(p => !liveStarterIds.has(p.sleeperId));
     el.innerHTML = bench.length
       ? bench.map(p => colCellHtml(p, league.week, null)).join('')
       : '<div class="panel-sub">No bench players found.</div>';
@@ -2576,8 +2577,7 @@
     if(!league || league.myRosterId==null) return issues;
     const week = league.week;
 
-    function checkLineup(rosterId, label){
-      const { starters, bench, slotDefs } = computeBestLineup(rosterId, week);
+    function checkLineup(starters, bench, slotDefs, label){
       const seen = new Set();
 
       starters.forEach(s=>{
@@ -2610,10 +2610,18 @@
       }
     }
 
-    checkLineup(league.myRosterId, 'Your suggested lineup');
+    const mineResult = computeBestLineup(league.myRosterId, week);
+    checkLineup(mineResult.starters, mineResult.bench, mineResult.slotDefs, 'Your suggested lineup');
+
     const wk = league.matchupsByWeek[week];
     if(wk && wk.oppRosterId){
-      checkLineup(wk.oppRosterId, "Opponent's lineup");
+      // Validate what's actually shown for the opponent — their real live
+      // starters — not our own algorithm's guess at their lineup.
+      const slotDefs = getWeeklySlotDefs();
+      const oppStarters = getLiveStarters(wk.oppRosterId, week);
+      const liveIds = new Set(oppStarters.filter(p=>!p._empty).map(p=>p.sleeperId));
+      const oppBench = enrichRoster(wk.oppRosterId).filter(p=>!liveIds.has(p.sleeperId));
+      checkLineup(oppStarters, oppBench, slotDefs, "Opponent's live lineup");
     }
 
     // 5. Any active manual override should still point at a player actually on your roster
