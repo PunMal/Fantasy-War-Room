@@ -220,11 +220,24 @@
   #chatMessages{ max-height:360px; overflow-y:auto; display:flex; flex-direction:column; gap:10px; margin-bottom:10px; }
   .chat-msg{ padding:9px 12px; border-radius:8px; font-size:13px; line-height:1.5; max-width:85%; }
   .chat-msg.user{ background:rgba(79,157,61,0.14); border:1px solid var(--turf); align-self:flex-end; }
-  .chat-msg.assistant{ background:var(--panel-2); border:1px solid var(--line); align-self:flex-start; white-space:pre-wrap; }
+  .chat-msg.assistant{ background:var(--panel-2); border:1px solid var(--line); align-self:flex-start; }
   .chat-msg.pending{ color:var(--text-dim); font-style:italic; }
   .chat-msg.error{ background:rgba(193,85,75,0.14); border:1px solid var(--danger); }
   .chat-input-row{ display:flex; gap:8px; }
   .chat-input-row textarea{ flex:1; resize:vertical; font-family:'Inter',sans-serif; }
+
+  /* Markdown rendering inside chat responses */
+  .chat-msg.assistant .chat-heading{ font-family:'Barlow Condensed',sans-serif; margin:8px 0 4px; color:var(--text); }
+  .chat-msg.assistant .chat-list{ margin:4px 0 8px; padding-left:20px; }
+  .chat-msg.assistant .chat-list li{ margin-bottom:3px; }
+  .chat-msg.assistant code{
+    background:var(--panel); border:1px solid var(--line); border-radius:3px;
+    padding:1px 5px; font-family:monospace; font-size:12px;
+  }
+  .chat-table{ border-collapse:collapse; width:100%; margin:8px 0; font-size:12.5px; }
+  .chat-table th, .chat-table td{ border:1px solid var(--line); padding:6px 8px; text-align:left; }
+  .chat-table th{ background:var(--panel); color:var(--text-dim); font-weight:600; }
+  .chat-table tr:nth-child(even) td{ background:rgba(255,255,255,0.02); }
 
   #scoreboard{
     position:sticky; top:45px; z-index:20;
@@ -2704,13 +2717,100 @@
     refreshChatUiState();
   });
 
+  function escapeHtml(s){
+    return (s||'')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  // Minimal markdown -> HTML for chat responses: headers, bold/italic, bullet
+  // and numbered lists, and pipe tables. Not a full markdown spec — just
+  // enough to make Claude's typical formatted answers readable instead of
+  // showing raw "| Col | Col |" syntax as plain text.
+  function renderMarkdownLite(raw){
+    const lines = escapeHtml(raw).split('\n');
+    const html = [];
+    let i = 0;
+
+    function isTableRow(l){ return /^\s*\|.*\|\s*$/.test(l); }
+    function isTableSep(l){ return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(l); }
+    function splitRow(l){ return l.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>c.trim()); }
+    function inline(s){
+      return s
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/(^|[^*])\*(?!\*)(.+?)\*(?!\*)/g, '$1<em>$2</em>')
+        .replace(/`(.+?)`/g, '<code>$1</code>');
+    }
+
+    while(i < lines.length){
+      const line = lines[i];
+
+      // Table: a row line immediately followed by a separator line
+      if(isTableRow(line) && lines[i+1] && isTableSep(lines[i+1])){
+        const header = splitRow(line);
+        let j = i + 2;
+        const rows = [];
+        while(j < lines.length && isTableRow(lines[j])){ rows.push(splitRow(lines[j])); j++; }
+        html.push('<table class="chat-table"><thead><tr>' +
+          header.map(h=>`<th>${inline(h)}</th>`).join('') + '</tr></thead><tbody>' +
+          rows.map(r=>'<tr>'+r.map(c=>`<td>${inline(c)}</td>`).join('')+'</tr>').join('') +
+          '</tbody></table>');
+        i = j;
+        continue;
+      }
+
+      // Headers
+      const headerMatch = line.match(/^(#{1,4})\s+(.*)$/);
+      if(headerMatch){
+        const level = Math.min(4, headerMatch[1].length) + 2; // ## -> h4, ### -> h5, capped
+        html.push(`<h${level} class="chat-heading">${inline(headerMatch[2])}</h${level}>`);
+        i++; continue;
+      }
+
+      // Bullet list block
+      if(/^\s*[-*]\s+/.test(line)){
+        const items = [];
+        while(i < lines.length && /^\s*[-*]\s+/.test(lines[i])){
+          items.push(lines[i].replace(/^\s*[-*]\s+/, ''));
+          i++;
+        }
+        html.push('<ul class="chat-list">' + items.map(it=>`<li>${inline(it)}</li>`).join('') + '</ul>');
+        continue;
+      }
+
+      // Numbered list block
+      if(/^\s*\d+\.\s+/.test(line)){
+        const items = [];
+        while(i < lines.length && /^\s*\d+\.\s+/.test(lines[i])){
+          items.push(lines[i].replace(/^\s*\d+\.\s+/, ''));
+          i++;
+        }
+        html.push('<ol class="chat-list">' + items.map(it=>`<li>${inline(it)}</li>`).join('') + '</ol>');
+        continue;
+      }
+
+      // Blank line -> paragraph break
+      if(line.trim()===''){ html.push(''); i++; continue; }
+
+      // Plain text line
+      html.push(`<div>${inline(line)}</div>`);
+      i++;
+    }
+
+    return html.join('\n');
+  }
+
   function addChatMessage(role, text, pending){
     const box = document.getElementById('chatMessages');
     const id = 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
     const div = document.createElement('div');
     div.className = 'chat-msg ' + role + (pending ? ' pending' : '');
     div.id = id;
-    div.textContent = text;
+    if(role === 'assistant' && !pending){
+      div.innerHTML = renderMarkdownLite(text);
+    } else {
+      div.textContent = text; // user's own message, and pending placeholders — no need to markdown-render these
+    }
     box.appendChild(div);
     box.scrollTop = box.scrollHeight;
     return id;
@@ -2719,7 +2819,11 @@
   function updateChatMessage(id, text, cls){
     const el = document.getElementById(id);
     if(!el) return;
-    el.textContent = text;
+    if((cls||'assistant') === 'assistant'){
+      el.innerHTML = renderMarkdownLite(text);
+    } else {
+      el.textContent = text; // error messages stay plain
+    }
     el.className = 'chat-msg ' + (cls || 'assistant');
     document.getElementById('chatMessages').scrollTop = document.getElementById('chatMessages').scrollHeight;
   }
