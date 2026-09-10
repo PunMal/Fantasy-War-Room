@@ -700,6 +700,12 @@
       </div>
 
       <div class="panel">
+        <h2>Free agent upgrades — sign vs. drop</h2>
+        <div class="panel-sub">Direct like-for-like comparisons: the best available free agent at each position against your weakest rostered player there. Only shown where the free agent is a clear rank upgrade — not just "better than nothing."</div>
+        <div id="faUpgradeList"></div>
+      </div>
+
+      <div class="panel">
         <h2>Trade block watch</h2>
         <div class="panel-sub">Paste names you see flagged "on the block" in Sleeper's League Chat (one per line — extra lines like "WR - CLE" are ignored automatically) and get a real read on whether each is worth pursuing for your roster.</div>
         <textarea id="tradeBlockInput" rows="5" placeholder="Jerry Jeudy&#10;Cam Skattebo&#10;Bucky Irving&#10;Omarion Hampton"></textarea>
@@ -2048,6 +2054,67 @@
     return agents;
   }
 
+  const FA_UPGRADE_POSITIONS = ['QB','RB','WR','TE','DST','K'];
+
+  function computeFreeAgentUpgrades(){
+    if(!league || league.myRosterId==null) return [];
+    const myRoster = enrichRoster(league.myRosterId);
+    const agents = computeFreeAgents();
+
+    const upgrades = [];
+    FA_UPGRADE_POSITIONS.forEach(pos=>{
+      const myAtPos = myRoster.filter(p=>p.pos===pos).sort((a,b)=>a.rank-b.rank);
+      const bestFA = agents.find(a=>a.pos===pos);
+      if(!bestFA) return;
+
+      if(!myAtPos.length){
+        // You have nobody at this position at all — flag it, but don't guess who else to drop
+        upgrades.push({ pos, sign: bestFA, drop: null, noRosterAtPos: true });
+        return;
+      }
+
+      const weakest = myAtPos[myAtPos.length - 1];
+      if(bestFA.rank < weakest.rank){
+        upgrades.push({ pos, sign: bestFA, drop: weakest, rankGain: weakest.rank - bestFA.rank });
+      }
+    });
+
+    upgrades.sort((a,b) => (b.rankGain||0) - (a.rankGain||0));
+    return upgrades;
+  }
+
+  function renderFreeAgentUpgrades(){
+    const el = document.getElementById('faUpgradeList');
+    if(!league || league.myRosterId==null){ el.innerHTML=''; return; }
+    const upgrades = computeFreeAgentUpgrades();
+    if(!upgrades.length){
+      el.innerHTML = '<div class="panel-sub">No clear sign-over-drop upgrades right now — your roster already beats the best available free agent at every position.</div>';
+      return;
+    }
+    el.innerHTML = upgrades.map(u=>{
+      if(u.noRosterAtPos){
+        return `<div class="trade-card">
+          <div class="trade-card-partner">${u.sign.name} <span class="pos-pill">${u.pos}</span></div>
+          <div class="trade-rationale">You have nobody rostered at ${u.pos} at all — this would be a straight add, not a like-for-like swap. You'd need to drop someone from a deeper position to make room.</div>
+        </div>`;
+      }
+      return `<div class="trade-card">
+        <div class="trade-sides">
+          <div class="trade-side">
+            <div class="trade-side-label">Drop</div>
+            ${u.drop.name} (${u.pos}, rank ${u.drop.rank})
+          </div>
+          <div class="trade-arrow">⇄</div>
+          <div class="trade-side">
+            <div class="trade-side-label">Sign</div>
+            ${u.sign.name} (${u.pos}, rank ${u.sign.rank})
+          </div>
+        </div>
+        <div class="trade-rationale">${u.sign.name} outranks your current weakest ${u.pos} by ${u.rankGain} spot${u.rankGain>1?'s':''} — a real upgrade, not just a lateral swap.</div>
+      </div>`;
+    }).join('');
+  }
+
   /* ---------------- Trade suggestions ---------------- */
   const TRADE_POSITIONS = ['QB','RB','WR','TE','DST','K'];
 
@@ -2184,7 +2251,7 @@
     return { rows, overallSuggestedPct, overallLivePct };
   }
 
-  function colCellHtml(p, week, edgePct){
+  function colCellHtml(p, week, edgePct, extraHtml){
     if(!p || p._empty){
       return `<div class="col-cell empty-cell">${(p && p.name) ? p.name : '(empty)'}</div>`;
     }
@@ -2204,6 +2271,7 @@
       <div class="cc-meta">${p.team||'—'}${oppText}${kickoff}${proj}</div>
       ${tags.join('')}
       ${edgeHtml}
+      ${extraHtml||''}
     </div>`;
   }
 
@@ -2253,17 +2321,15 @@
 
     el.innerHTML = bench.map(p=>{
       const options = eligibleSlotsFor(p, slotDefs);
-      const selectHtml = options.length
-        ? `<select class="swap-select" data-swap-player="${p.sleeperId}">
-             ${options.map(o=>`<option value="${o.idx}">${o.label}</option>`).join('')}
-           </select>
-           <button class="small-btn ghost" data-swap-go="${p.sleeperId}">Swap in</button>`
+      const swapHtml = options.length
+        ? `<div class="swap-cell" style="margin-top:6px;">
+             <select class="swap-select" data-swap-player="${p.sleeperId}">
+               ${options.map(o=>`<option value="${o.idx}">${o.label}</option>`).join('')}
+             </select>
+             <button class="small-btn ghost" data-swap-go="${p.sleeperId}">Swap in</button>
+           </div>`
         : '';
-      return `
-        <div class="bench-row">
-          <span>${p.name} <span class="pos-pill">${p.pos}</span>${p.injury==='LT'?' <span class="tag injury-lt">LT</span>':p.injury==='Q'?' <span class="tag injury-q">Q</span>':''}${p.byeWeek===league.week?' <span class="tag injury-lt">BYE</span>':''}</span>
-          <span class="swap-cell">${selectHtml}</span>
-        </div>`;
+      return colCellHtml(p, league.week, null, swapHtml);
     }).join('');
 
     el.querySelectorAll('[data-swap-go]').forEach(btn=>{
@@ -2283,10 +2349,7 @@
     if(!wk || !wk.oppRosterId){ el.innerHTML = '<div class="panel-sub">Sync a week to see this.</div>'; return; }
     const { bench } = computeBestLineup(wk.oppRosterId, league.week);
     el.innerHTML = bench.length
-      ? bench.map(p=>`
-          <div class="bench-row">
-            <span>${p.name} <span class="pos-pill">${p.pos}</span>${p.injury==='LT'?' <span class="tag injury-lt">LT</span>':p.injury==='Q'?' <span class="tag injury-q">Q</span>':''}${p.byeWeek===league.week?' <span class="tag injury-lt">BYE</span>':''}</span>
-          </div>`).join('')
+      ? bench.map(p => colCellHtml(p, league.week, null)).join('')
       : '<div class="panel-sub">No bench players found.</div>';
   }
 
@@ -2608,6 +2671,7 @@
     renderMyBench();
     renderTheirBench();
     renderFreeAgents();
+    renderFreeAgentUpgrades();
     renderTradeSuggestions();
   }
 
