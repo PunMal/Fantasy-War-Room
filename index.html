@@ -648,7 +648,7 @@
 
       <div class="panel">
         <h2>Matchup breakdown</h2>
-        <div class="panel-sub">Your live Sleeper lineup, our suggestion, and your opponent's likely lineup — side by side. Edge Score is a heuristic based on rank, live injury status, and bye weeks, shown against your opponent at that same slot — not a calibrated statistical probability.</div>
+        <div class="panel-sub">Your live Sleeper lineup, our suggestion, and your opponent's likely lineup — side by side. Suggestions and Edge Score are driven by this week's Sleeper projections (falling back to draft rank when a projection is missing), plus live injury status and bye weeks, shown against your opponent at that same slot — not a calibrated statistical probability.</div>
         <div class="col-headers">
           <div>Your live Sleeper lineup</div>
           <div>Suggested lineup</div>
@@ -657,6 +657,16 @@
         <div id="threeColGrid"></div>
         <div id="h2hOverall"></div>
         <div class="panel-sub" id="liveLineupTimestamp" style="margin-top:10px;"></div>
+      </div>
+
+      <div class="panel">
+        <h2>AI lineup analyst</h2>
+        <div class="panel-sub">Reads live news across the web — injury reports, beat-writer updates, snap-count/role trends, weather, Vegas lines, and expert start/sit consensus (FantasyPros, ESPN, PFF, etc.) — not just Sleeper's static projections, and reasons through the close calls on your full roster (starters + bench) to recommend a lineup. Uses the same Anthropic API key as "Ask about your lineup" below, so set that up first if you haven't. Each run does real web research, so it costs a bit more than a single chat question and can take up to a minute.</div>
+        <div class="row" style="align-items:center;">
+          <button id="runAnalystBtn" class="primary">Run full analysis</button>
+          <span class="panel-sub" id="aiAnalystStatus" style="margin:0;"></span>
+        </div>
+        <div id="aiAnalystResult"></div>
       </div>
 
       <div class="panel">
@@ -1952,7 +1962,18 @@
   }
 
   function scoreForLineup(p, week){
-    let score = 1000 - p.rank;
+    let score;
+    if(p.projPts != null){
+      // This week's actual Sleeper projection is a far better signal than a static
+      // preseason rank — it already reflects matchup, usage, and role changes.
+      // Rank still breaks ties between close projections (e.g. new-role rookies
+      // Sleeper's model hasn't caught up on yet).
+      score = p.projPts * 30 + (500 - p.rank) * 0.05;
+    } else {
+      // No projection available for this player/week (fetch failed, or an
+      // unprojected DST/K) — fall back to draft-board rank.
+      score = 1000 - p.rank;
+    }
     score += Number(p.adjust)||0;
     if(p.byeWeek === week) score -= 1000; // cannot play — always benched
     else if(p.injury === 'LT') score -= 400;
@@ -2227,9 +2248,9 @@
 
   // Heuristic "Edge Score": converts a score gap into a lean, using a smooth
   // curve so it never claims false certainty (capped 3%-97%). This is NOT a
-  // calibrated win probability — there's no real projections/points data
-  // driving the underlying score yet, just rank + injury + bye. Framed and
-  // labeled as such everywhere it's shown.
+  // calibrated win probability — it's driven by this week's Sleeper projection
+  // (falling back to draft rank when a projection is missing) plus injury/bye.
+  // Framed and labeled as such everywhere it's shown.
   function edgePercent(myScore, theirScore){
     const diff = myScore - theirScore;
     const raw = 50 + 50 * Math.tanh(diff / 120);
@@ -2694,7 +2715,181 @@
     renderFreeAgents();
     renderFreeAgentUpgrades();
     renderTradeSuggestions();
+    renderAiAnalysis();
   }
+
+  /* ---------------- AI lineup analyst ---------------- */
+  // A separate, explicitly-triggered call (not run on every render) since it
+  // does real web research and costs noticeably more than a single chat
+  // question. Result is cached per-week on the league object so it survives
+  // refreshes and doesn't silently re-run/re-bill itself.
+  const AI_ANALYST_MODEL = 'claude-sonnet-4-6';
+
+  function parseAnalystJson(text){
+    const match = text.match(/```json\s*([\s\S]*?)```/i) || text.match(/```\s*([\s\S]*?)```/);
+    if(!match) return null;
+    try{
+      const obj = JSON.parse(match[1]);
+      if(obj && typeof obj==='object' && obj.lineup) return obj;
+    } catch(e){ /* model didn't return valid JSON this time — fall back to raw text below */ }
+    return null;
+  }
+
+  async function runAiAnalysis(){
+    if(!league || league.myRosterId==null) return;
+    const apiKey = localStorage.getItem(ANTHROPIC_KEY_STORAGE);
+    const statusEl = document.getElementById('aiAnalystStatus');
+    const btn = document.getElementById('runAnalystBtn');
+    if(!apiKey){
+      statusEl.textContent = 'Save your Anthropic API key below in "Ask about your lineup" first.';
+      return;
+    }
+
+    const week = league.week;
+    const slotLabels = getWeeklySlotDefs().map(d=>d.label);
+    btn.disabled = true;
+    statusEl.textContent = 'Researching your matchup — this does live web search on the close calls, so it can take up to a minute…';
+
+    const prompt = `You are an expert, well-informed NFL fantasy football analyst with live web access. Act like a real analyst: research current news before making calls — injury reports, beat-writer updates, snap-count/target-share trends, role changes, weather, Vegas lines/implied totals, and expert start/sit consensus (FantasyPros, ESPN, PFF, etc.) — not just a static projection number.
+
+${buildLineupContext()}
+
+Your job: recommend the single best starting lineup for THIS WEEK from my full roster (starters + bench, listed above), and explain your reasoning for every non-obvious call.
+
+Research real, current news for any player who is questionable/injured, in a timeshare or role change, facing a notably tough or easy matchup, or where a bench player might reasonably outperform a starter. You don't need to research obvious elite locks with no concerns.
+
+The valid lineup slots for my team are exactly: ${slotLabels.join(', ')}.
+
+Respond in two parts, in this exact order:
+1. A short prose analysis (a few sentences per notable decision) covering what you found and why it changes or confirms the call.
+2. Then, at the very end of your response, a single fenced code block of valid JSON in exactly this shape — use the exact slot labels above as keys, and exact player names as they appear in my roster/bench list above:
+
+\`\`\`json
+{
+  "lineup": { "<slot label>": "<player name>", "...": "..." },
+  "decisions": [
+    { "slot": "<slot label>", "player": "<player name>", "reason": "<1-3 sentences, citing what you found>" }
+  ]
+}
+\`\`\`
+
+Include one "lineup" entry for every slot listed above. Only include a "decisions" entry for calls actually worth explaining — skip obvious locks with nothing new to report.`;
+
+    try{
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: AI_ANALYST_MODEL,
+          max_tokens: 3000,
+          messages: [{ role: 'user', content: prompt }],
+          tools: [{ type: 'web_search_20250305', name: 'web_search' }]
+        })
+      });
+
+      if(!res.ok){
+        const errBody = await res.text();
+        let msg = `Request failed (HTTP ${res.status}).`;
+        if(res.status===401) msg = 'That API key was rejected — double check it was copied correctly.';
+        else if(res.status===429) msg = 'Rate limited by Anthropic — wait a moment and try again.';
+        statusEl.textContent = msg + ' ' + errBody.slice(0,200);
+        return;
+      }
+
+      const data = await res.json();
+      const textParts = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text);
+      const fullText = textParts.join('\n\n').trim();
+      const parsed = parseAnalystJson(fullText);
+
+      league.aiAnalysis = league.aiAnalysis || {};
+      league.aiAnalysis[week] = {
+        rawText: fullText,
+        lineup: parsed ? parsed.lineup : null,
+        decisions: parsed ? parsed.decisions : null,
+        analyzedAt: new Date().toISOString()
+      };
+      saveState();
+      statusEl.textContent = '';
+      renderAiAnalysis();
+    } catch(e){
+      statusEl.textContent = `Could not reach the Anthropic API (${e.message}).`;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function renderAiAnalysis(){
+    const el = document.getElementById('aiAnalystResult');
+    if(!el) return;
+    if(!league || league.myRosterId==null){ el.innerHTML=''; return; }
+    const week = league.week;
+    const analysis = league.aiAnalysis && league.aiAnalysis[week];
+    if(!analysis){
+      el.innerHTML = '<div class="panel-sub" style="margin-top:10px;">No analysis run yet for this week — click "Run full analysis" above.</div>';
+      return;
+    }
+
+    const myRoster = enrichRoster(league.myRosterId);
+    const findPlayer = name => name ? myRoster.find(p => normalizeName(p.name) === normalizeName(name)) : null;
+
+    let lineupHtml = '';
+    if(analysis.lineup){
+      const slotDefs = getWeeklySlotDefs();
+      lineupHtml = `<div class="fa-group-label" style="margin-top:14px;">AI-recommended lineup</div><div id="aiLineupGrid">` +
+        slotDefs.map(def=>{
+          const name = analysis.lineup[def.label];
+          const p = findPlayer(name);
+          return p ? colCellHtml(Object.assign({}, p, { slot: def.label }), week, null)
+                    : `<div class="col-cell empty-cell">${escapeHtml(def.label)}: ${escapeHtml(name || '(no pick returned)')}</div>`;
+        }).join('') + '</div>';
+    }
+
+    const applyHtml = analysis.lineup
+      ? `<button id="applyAiLineupBtn" class="primary small-btn" style="margin-top:10px;">Apply this lineup</button>`
+      : '';
+
+    let decisionsHtml = '';
+    if(analysis.decisions && analysis.decisions.length){
+      decisionsHtml = '<div class="fa-group-label" style="margin-top:16px;">Key roster decisions</div>' +
+        analysis.decisions.map(d => `
+          <div class="trade-card">
+            <div class="trade-card-partner">${escapeHtml(d.slot||'')}${d.player?' — '+escapeHtml(d.player):''}</div>
+            <div class="trade-rationale">${escapeHtml(d.reason||'')}</div>
+          </div>
+        `).join('');
+    } else if(!analysis.lineup){
+      // JSON parse failed this run — fall back to showing the full raw analysis
+      decisionsHtml = `<div class="fa-group-label" style="margin-top:16px;">Analysis</div><div>${renderMarkdownLite(analysis.rawText)}</div>`;
+    }
+
+    el.innerHTML = `
+      <div class="panel-sub" style="margin-top:10px;">Last analyzed: ${new Date(analysis.analyzedAt).toLocaleString()}</div>
+      ${lineupHtml}
+      ${applyHtml}
+      ${decisionsHtml}
+    `;
+
+    const applyBtn = document.getElementById('applyAiLineupBtn');
+    if(applyBtn){
+      applyBtn.addEventListener('click', ()=>{
+        const slotDefs = getWeeklySlotDefs();
+        let applied = 0;
+        slotDefs.forEach((def, idx)=>{
+          const p = findPlayer(analysis.lineup[def.label]);
+          if(p){ setLineupOverride(week, idx, p.sleeperId); applied++; }
+        });
+        renderWeeklyDashboard();
+        alert(`Applied ${applied} of ${slotDefs.length} slots from the AI recommendation.`);
+      });
+    }
+  }
+
+  document.getElementById('runAnalystBtn').addEventListener('click', runAiAnalysis);
 
   /* ---------------- Ask about your lineup (chat) ---------------- */
   // The API key lives ONLY in this browser's localStorage, under its own key —
