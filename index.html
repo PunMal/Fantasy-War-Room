@@ -1860,10 +1860,15 @@
     statusEl.className = 'sync-status';
     statusEl.textContent = 'Syncing…';
     try{
+      // Sleeper's API is served behind a CDN with a 5-10 min cache
+      // (cache-control: s-maxage=300, stale-while-revalidate=300) — without
+      // a cache-busting param, a "Sync this week" right after changing your
+      // Sleeper lineup can silently hand back a pre-change snapshot.
+      const cacheBust = `_=${Date.now()}`;
       const [matchupsRes, rostersRes, settingsRes] = await Promise.all([
-        fetch(`https://api.sleeper.app/v1/league/${league.leagueId}/matchups/${week}`),
-        fetch(`https://api.sleeper.app/v1/league/${league.leagueId}/rosters`),
-        fetch(`https://api.sleeper.app/v1/league/${league.leagueId}`)
+        fetch(`https://api.sleeper.app/v1/league/${league.leagueId}/matchups/${week}?${cacheBust}`, { cache: 'no-store' }),
+        fetch(`https://api.sleeper.app/v1/league/${league.leagueId}/rosters?${cacheBust}`, { cache: 'no-store' }),
+        fetch(`https://api.sleeper.app/v1/league/${league.leagueId}?${cacheBust}`, { cache: 'no-store' })
       ]);
       const data = await matchupsRes.json();
       const freshRosters = await rostersRes.json();
