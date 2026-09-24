@@ -2756,7 +2756,7 @@ ${buildLineupContext()}
 
 Your job: recommend the single best starting lineup for THIS WEEK from my full roster (starters + bench, listed above), and explain your reasoning for every non-obvious call.
 
-Research real, current news for any player who is questionable/injured, in a timeshare or role change, facing a notably tough or easy matchup, or where a bench player might reasonably outperform a starter. You don't need to research obvious elite locks with no concerns.
+Research real, current news for any player who is questionable/injured, in a timeshare or role change, facing a notably tough or easy matchup, or where a bench player might reasonably outperform a starter. You don't need to research obvious elite locks with no concerns. Focus your searches on the handful of players where it could actually change a decision — don't spend searches confirming locks.
 
 The valid lineup slots for my team are exactly: ${slotLabels.join(', ')}.
 
@@ -2775,9 +2775,19 @@ Respond in two parts, in this exact order:
 
 Include one "lineup" entry for every slot listed above. Only include a "decisions" entry for calls actually worth explaining — skip obvious locks with nothing new to report.`;
 
+    // A generous client-side timeout, distinct from Anthropic's own error
+    // responses: analyst runs can involve many sequential web searches and
+    // easily run past what some routers/VPNs/extensions will hold an idle
+    // connection open for, which surfaces as a generic "Failed to fetch"
+    // with no HTTP status at all. Aborting ourselves at least gives a
+    // specific, actionable message instead of that generic browser error.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(()=>controller.abort(), 170000);
+
     try{
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           'content-type': 'application/json',
           'x-api-key': apiKey,
@@ -2788,9 +2798,12 @@ Include one "lineup" entry for every slot listed above. Only include a "decision
           model: AI_ANALYST_MODEL,
           max_tokens: 3000,
           messages: [{ role: 'user', content: prompt }],
-          tools: [{ type: 'web_search_20250305', name: 'web_search' }]
+          // max_uses caps total searches this run can make — bounds how long
+          // the response can take, since each search adds real latency.
+          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }]
         })
       });
+      clearTimeout(timeoutId);
 
       if(!res.ok){
         const errBody = await res.text();
@@ -2817,7 +2830,10 @@ Include one "lineup" entry for every slot listed above. Only include a "decision
       statusEl.textContent = '';
       renderAiAnalysis();
     } catch(e){
-      statusEl.textContent = `Could not reach the Anthropic API (${e.message}).`;
+      clearTimeout(timeoutId);
+      statusEl.textContent = (e.name === 'AbortError')
+        ? 'Timed out waiting for a response after ~3 minutes — this usually means a lot of research was needed. Try again, or ask a narrower question in "Ask about your lineup" instead.'
+        : `Could not reach the Anthropic API (${e.message}). If "Ask about your lineup" works but this doesn't, it's likely a network/VPN/extension dropping the longer connection this needs — try again, or on a different network.`;
     } finally {
       btn.disabled = false;
     }
