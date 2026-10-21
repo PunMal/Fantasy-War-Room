@@ -2118,7 +2118,7 @@
       const overrideId = overrides[idx];
       if(!overrideId) return;
       const p = roster.find(x=>x.sleeperId===overrideId);
-      if(!p) return;
+      if(!p || used.has(p.sleeperId)) return; // already placed by an earlier override — never start someone twice
       const eligible = def.pos==='FLEX' ? ['RB','WR','TE'] : [def.pos];
       if(!eligible.includes(p.pos)) return; // stale/invalid override for this slot — let Pass 2 fill it properly instead
       used.add(p.sleeperId); starters[idx] = Object.assign({}, p, { slot: def.label, slotIndex: idx });
@@ -2140,7 +2140,11 @@
     if(!league) return;
     league.lineupOverrides = league.lineupOverrides || {};
     league.lineupOverrides[week] = league.lineupOverrides[week] || {};
-    league.lineupOverrides[week][slotIndex] = sleeperId;
+    const wkOverrides = league.lineupOverrides[week];
+    // Moving a player into a slot takes them out of any other slot they were
+    // overridden into, otherwise e.g. swapping a WR into FLEX left them in WR2 too.
+    Object.keys(wkOverrides).forEach(k=>{ if(wkOverrides[k]===sleeperId) delete wkOverrides[k]; });
+    wkOverrides[slotIndex] = sleeperId;
     saveState();
   }
 
