@@ -208,7 +208,6 @@
 
   /* Chat panel */
   #chatKeySetup .field{ max-width:360px; }
-  #tradeBlockInput{ width:100%; font-family:'Inter',sans-serif; resize:vertical; }
 
   .integrity-ok{ font-size:12.5px; color:var(--turf); }
   .integrity-issues{
@@ -319,6 +318,24 @@
   .tag.need{ background:rgba(79,157,61,0.18); color:var(--turf); }
   .tag.injury-lt{ background:rgba(193,85,75,0.22); color:var(--danger); }
   .tag.injury-q{ background:rgba(232,163,61,0.14); color:var(--amber); }
+  .tag.addnow{ background:rgba(79,157,61,0.22); color:var(--turf); }
+  .tag.streamer{ background:rgba(232,163,61,0.18); color:var(--amber); }
+  .tag.stash{ background:rgba(147,167,156,0.16); color:var(--text-dim); }
+  .tag.watch{ background:rgba(43,55,59,0.5); color:var(--text-dim); }
+
+  .fa-card{
+    background:var(--panel-2); border:1px solid var(--line); border-radius:6px;
+    padding:10px 12px; margin-bottom:6px; cursor:pointer; user-select:none;
+  }
+  .fa-card:hover{ border-color:var(--turf); }
+  .fa-card.expanded{ border-color:var(--turf); }
+  .fa-card-top{ display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+  .fa-card-name{ font-weight:600; font-size:13px; }
+  .fa-card-rationale{ font-size:12px; color:var(--text-dim); margin-top:6px; }
+  .fa-deepdive{
+    margin-top:10px; padding-top:10px; border-top:1px dashed var(--line);
+    cursor:default; user-select:text;
+  }
 
   .injury-select{ font-size:11px; padding:3px 6px; }
   .adjust-input{ width:52px; font-size:12px; padding:3px 5px; text-align:center; }
@@ -712,29 +729,14 @@
 
       <div class="panel">
         <h2>Free agent suggestions</h2>
-        <div class="panel-sub">Unrostered players from your board, prioritized by your weakest positions — especially thin spots like TE.</div>
+        <div class="panel-sub">Ranked across all positions by value over replacement (not split into position buckets), weighted by how badly you actually need that position right now, with a verdict so it's clear what to actually do: <b>Add now</b> (a real upgrade over your weakest rostered player there — drop target included), <b>Streamer</b> (matchup-driven DST/K play, not a long-term hold), <b>Stash</b> (worth a bench spot — projects well, trending on the waiver wire, or the market sees real season-long upside even if this week's number is modest), or <b>Watch</b> (on your board but no strong signal yet). A 📈 badge means the market's season-long position ranking sees more in them than this week's projection alone shows. <b>Double-click any player</b> for an on-demand deep dive — a live web search for recent news on that specific player, combined with our internal read, ending in a verdict.</div>
         <div id="freeAgentList"></div>
       </div>
 
       <div class="panel">
         <h2>Trade suggestions</h2>
-        <div class="panel-sub">Realistic starting points, not final offers — matched so both sides plausibly gain something. You'll still need to actually negotiate these with the other manager.</div>
-        <div class="panel-sub" style="color:var(--amber);">Note: Sleeper doesn't expose an actual "trade block" list through its public data (checked directly — the field it would live in is empty across every team in your league, and the League Chat feed loads over a connection this app can't read), so these are generated from roster surplus/need analysis across the whole league, not from anyone's declared willingness to trade a specific player.</div>
+        <div class="panel-sub">The 2-3 strongest trade pitches across your whole league right now — scanned against every other roster, scored on real season-long market value (not a stale board or raw depth counts) for both fairness and how much it actually fills a need on each side. Realistic starting points to take to a manager, not final offers — you'll still need to negotiate.</div>
         <div id="tradeSuggestionList"></div>
-      </div>
-
-      <div class="panel">
-        <h2>Free agent upgrades — sign vs. drop</h2>
-        <div class="panel-sub">Direct like-for-like comparisons: the best available free agent at each position against your weakest rostered player there. Only shown where the free agent is a clear rank upgrade — not just "better than nothing."</div>
-        <div id="faUpgradeList"></div>
-      </div>
-
-      <div class="panel">
-        <h2>Trade block watch</h2>
-        <div class="panel-sub">Paste names you see flagged "on the block" in Sleeper's League Chat (one per line — extra lines like "WR - CLE" are ignored automatically) and get a real read on whether each is worth pursuing for your roster.</div>
-        <textarea id="tradeBlockInput" rows="5" placeholder="Jerry Jeudy&#10;Cam Skattebo&#10;Bucky Irving&#10;Omarion Hampton"></textarea>
-        <button id="analyzeTradeBlockBtn" class="primary small-btn" style="margin-top:8px;">Analyze</button>
-        <div id="tradeBlockResults" style="margin-top:12px;"></div>
       </div>
 
       <div class="footer-actions">
@@ -778,6 +780,8 @@
   let league = null; // { leagueId, myRosterId, users:[], rosters:[], week, matchupsByWeek:{} }
   let sleeperPlayerDB = {}; // Sleeper player_id -> {name,pos,team,injury_status,status,search_rank}
   let sleeperPlayerDBFetchedAt = null;
+  let trendingAdds = {}; // Sleeper player_id -> add count across the whole platform, last 24h
+  let trendingAddsFetchedAt = null;
 
   // 2026 NFL bye weeks, keyed by Sleeper's own team codes (confirmed live —
   // note Sleeper uses JAX not JAC, and LV not LVR, unlike some ranking sites).
@@ -1733,6 +1737,46 @@
     }
   }
 
+  const TRENDING_KEY = 'draftWarRoom_trending_v1';
+  const TRENDING_MAX_AGE_MS = 3 * 60 * 60 * 1000; // waiver buzz moves fast — refresh every 3h, vs 12h for the full player DB
+
+  function loadTrendingFromCache(){
+    try{
+      const raw = localStorage.getItem(TRENDING_KEY);
+      if(!raw) return false;
+      const data = JSON.parse(raw);
+      if(!data || !data.trending) return false;
+      trendingAdds = data.trending;
+      trendingAddsFetchedAt = data.fetchedAt;
+      return true;
+    } catch(e){ return false; }
+  }
+
+  // Sleeper's trending-adds feed is the "everyone's waiver wire is moving on
+  // this guy" signal — it reacts within hours to a breakout game or an
+  // injury ahead of someone, well before weekly projections catch up.
+  async function fetchTrendingAdds(force){
+    if(!force && trendingAddsFetchedAt && (Date.now() - trendingAddsFetchedAt) < TRENDING_MAX_AGE_MS){
+      return true;
+    }
+    try{
+      const res = await fetch('https://api.sleeper.app/v1/players/nfl/trending/add?lookback_hours=24&limit=100');
+      const data = await res.json();
+      const trimmed = {};
+      (Array.isArray(data) ? data : []).forEach(entry=>{
+        if(entry && entry.player_id != null) trimmed[entry.player_id] = entry.count;
+      });
+      trendingAdds = trimmed;
+      trendingAddsFetchedAt = Date.now();
+      try{
+        localStorage.setItem(TRENDING_KEY, JSON.stringify({ trending: trimmed, fetchedAt: trendingAddsFetchedAt }));
+      } catch(e){ /* best-effort cache */ }
+      return true;
+    } catch(e){
+      return false; // non-fatal — free agents just render without trending badges this session
+    }
+  }
+
   // Long-term vs short-term classification, same scale as the draft tool's manual injury tag
   function classifySleeperInjury(status){
     if(!status) return '';
@@ -1743,15 +1787,29 @@
   }
 
   /* ---------------- League connection ---------------- */
+  // Sleeper's own source of truth for "what week is it" — used so the week
+  // selector defaults to the real current week instead of sitting on whatever
+  // number was last typed in (which was silently making projections/free
+  // agents look "stale" when it was actually just synced against an old week).
+  async function fetchCurrentNflWeek(){
+    try{
+      const res = await fetch('https://api.sleeper.app/v1/state/nfl');
+      const state = await res.json();
+      const wk = Number(state && state.week);
+      return (wk >= 1 && wk <= 18) ? wk : null;
+    } catch(e){ return null; }
+  }
+
   async function connectLeague(leagueId){
     const statusEl = document.getElementById('leagueConnectStatus');
     statusEl.className = 'sync-status';
     statusEl.textContent = 'Connecting…';
     try{
-      const [usersRes, rostersRes, settingsRes] = await Promise.all([
+      const [usersRes, rostersRes, settingsRes, currentWeek] = await Promise.all([
         fetch(`https://api.sleeper.app/v1/league/${leagueId}/users`),
         fetch(`https://api.sleeper.app/v1/league/${leagueId}/rosters`),
-        fetch(`https://api.sleeper.app/v1/league/${leagueId}`)
+        fetch(`https://api.sleeper.app/v1/league/${leagueId}`),
+        fetchCurrentNflWeek()
       ]);
       const users = await usersRes.json();
       const rosters = await rostersRes.json();
@@ -1767,7 +1825,8 @@
       const rosterPositions = (settings && Array.isArray(settings.roster_positions))
         ? settings.roster_positions.filter(p => p !== 'BN')
         : null;
-      league = { leagueId, myRosterId: null, users, rosters, rosterPositions, week: 1, matchupsByWeek: {}, lineupOverrides: {}, weekData: {} };
+      league = { leagueId, myRosterId: null, users, rosters, rosterPositions, week: currentWeek || 1, matchupsByWeek: {}, lineupOverrides: {}, weekData: {} };
+      document.getElementById('weekSelector').value = league.week;
       statusEl.className = 'sync-status ok';
       statusEl.textContent = `Connected — found ${rosters.length} teams.`;
 
@@ -1799,7 +1858,7 @@
     if(!league) return;
     league.myRosterId = Number(document.getElementById('myTeamSelect').value);
     saveState();
-    await fetchSleeperPlayerDB(false);
+    await Promise.all([fetchSleeperPlayerDB(false), fetchTrendingAdds(false)]);
     document.getElementById('leagueConnectPanel').classList.add('hidden');
     document.getElementById('weeklyDashboard').classList.remove('hidden');
     renderWeeklyDashboard();
@@ -1817,7 +1876,7 @@
   });
 
   document.getElementById('refreshPlayerDbBtn').addEventListener('click', async function(){
-    await fetchSleeperPlayerDB(true);
+    await Promise.all([fetchSleeperPlayerDB(true), fetchTrendingAdds(true)]);
     renderWeeklyDashboard();
   });
 
@@ -1845,13 +1904,28 @@
       // Match your league's actual scoring format so "projected points" means the same thing everywhere else in the app
       const scoreKey = cfg && cfg.scoring==='half' ? 'pts_half_ppr' : (cfg && cfg.scoring==='standard' ? 'pts_std' : 'pts_ppr');
       const projections = {};
+      const rosAdp = {};
+      const overallAdp = {};
       Object.entries(projData||{}).forEach(([id, stats])=>{
         if(stats && stats[scoreKey]!=null) projections[id] = Math.round(stats[scoreKey]*10)/10;
+        // pos_adp_dd_ppr is the market's season-long, position-specific consensus
+        // value (dynasty+redraft blend) — a proxy for "upside beyond this one
+        // week's number" (rookies on the rise, changing roles) since it reflects
+        // broader opportunity/talent outlook, not just this week's matchup.
+        // 999 is Sleeper's sentinel for "no real market value" — drop those.
+        if(stats && stats.pos_adp_dd_ppr != null && stats.pos_adp_dd_ppr < 900) rosAdp[id] = stats.pos_adp_dd_ppr;
+        // adp_dd_ppr is the OVERALL (cross-position) consensus draft value —
+        // unlike position ADP, this is what makes a trade value comparable
+        // across positions: the market's actual real-draft behavior already
+        // encodes position scarcity (e.g. a QB taken pick 30 vs a RB taken
+        // pick 30 are treated as comparable value), which a within-position
+        // rank alone can't do.
+        if(stats && stats.adp_dd_ppr != null && stats.adp_dd_ppr < 900) overallAdp[id] = stats.adp_dd_ppr;
       });
 
-      return { gameInfo, projections };
+      return { gameInfo, projections, rosAdp, overallAdp };
     } catch(e){
-      return { gameInfo:{}, projections:{} };
+      return { gameInfo:{}, projections:{}, rosAdp:{}, overallAdp:{} };
     }
   }
 
@@ -1900,7 +1974,7 @@
       const opp = mine ? data.find(m=>m.roster_id !== league.myRosterId && m.matchup_id === mine.matchup_id) : null;
       league.matchupsByWeek[week] = { oppRosterId: opp ? opp.roster_id : null };
       league.week = week;
-      await fetchSleeperPlayerDB(false);
+      await Promise.all([fetchSleeperPlayerDB(false), fetchTrendingAdds(false)]);
       league.weekData = league.weekData || {};
       league.weekData[week] = await fetchWeekExtras(week);
       league.lastSyncedAt = Date.now();
@@ -2077,160 +2151,464 @@
   }
 
   /* ---------------- Free agents ---------------- */
+  // Who's actually rostered is always live off Sleeper (rosteredIds, below) — that
+  // part was never stale. What WAS stale: ranking those free agents off your
+  // manually-pasted preseason board, which doesn't know about this week's role
+  // changes, injuries elsewhere opening up volume, or players who broke out after
+  // you pasted that list. So free agents are now ranked by the same live, weekly
+  // Sleeper projections (+ matchup/injury context) that already drive lineup
+  // suggestions — falling back to board/search rank only when no projection exists
+  // yet (early-week sync, or an unprojected DST/K).
+  const FA_POSITIONS = ['QB','RB','WR','TE','DST','K'];
+
+  // How many starter slots effectively exist at each position, across the
+  // whole league — this is what "replacement level" is measured against.
+  // Uses the league's own live roster_positions (so a 2-WR vs 3-WR league, or
+  // one with a FLEX/SUPER_FLEX, gets the right baseline) rather than assuming
+  // a fixed roster shape. Flex-type slots are split across the positions
+  // eligible to fill them.
+  function getPositionStarterCounts(){
+    const counts = { QB:0, RB:0, WR:0, TE:0, DST:0, K:0 };
+    const raw = (league && league.rosterPositions) ? league.rosterPositions : ['QB','RB','RB','WR','WR','TE','FLEX','DST','K'];
+    let flex = 0, recFlex = 0, superFlex = 0;
+    raw.forEach(slot=>{
+      const pos = slot === 'DEF' ? 'DST' : slot;
+      if(counts.hasOwnProperty(pos)) counts[pos]++;
+      else if(pos === 'FLEX' || pos === 'WRRB_FLEX') flex++;
+      else if(pos === 'REC_FLEX' || pos === 'WRTE_FLEX') recFlex++;
+      else if(pos === 'SUPER_FLEX') superFlex++;
+    });
+    counts.RB += flex * 0.5;
+    counts.WR += flex * 0.5 + recFlex * 0.5;
+    counts.TE += recFlex * 0.5;
+    counts.QB += superFlex * 0.7;
+    counts.RB += superFlex * 0.1; counts.WR += superFlex * 0.1; counts.TE += superFlex * 0.1;
+    return counts;
+  }
+
+  // The projected points of the Nth-best player at each position, where N is
+  // "starters per team × number of teams" — i.e. the last player who's
+  // actually startable league-wide this week. Comparing a free agent's
+  // projection against THIS (rather than raw points) is what makes a TE and
+  // a WR comparable on one list: a mediocre TE can be well above a thin
+  // replacement level while a mediocre WR isn't, even with a higher raw
+  // projection.
+  function computeReplacementLevels(week, wd){
+    const starters = getPositionStarterCounts();
+    const numTeams = (league && league.rosters) ? league.rosters.length : 10;
+    const pool = { QB:[], RB:[], WR:[], TE:[], DST:[], K:[] };
+    Object.entries(sleeperPlayerDB).forEach(([id, sp])=>{
+      if(sp.status !== 'Active' || !sp.team || !pool[sp.pos]) return;
+      const proj = (wd && wd.projections) ? wd.projections[id] : null;
+      if(proj != null) pool[sp.pos].push(proj);
+    });
+    const replacement = {};
+    FA_POSITIONS.forEach(pos=>{
+      const list = pool[pos].sort((a,b)=>b-a);
+      if(!list.length){ replacement[pos] = 0; return; }
+      const idx = Math.max(0, Math.min(list.length - 1, Math.round(numTeams * (starters[pos]||0)) - 1));
+      replacement[pos] = list[idx];
+    });
+    return replacement;
+  }
+
+  // Your weakest rostered player at each position, scored the same way the
+  // lineup optimizer scores them — used only to decide whether a free agent
+  // is a real like-for-like upgrade (the "Add now" verdict below).
+  function getMyWeakestByPos(week){
+    if(!league || league.myRosterId==null) return {};
+    const mine = enrichRoster(league.myRosterId);
+    const result = {};
+    FA_POSITIONS.forEach(pos=>{
+      const atPos = mine.filter(p=>p.pos===pos)
+        .map(p=>Object.assign({}, p, { _score: scoreForLineup(p, week) }))
+        .sort((a,b)=>b._score-a._score);
+      if(atPos.length) result[pos] = atPos[atPos.length-1];
+    });
+    return result;
+  }
+
+  // How strong is your OWN starting group at each position, right now — not
+  // "how many do I have," but "how good is the worst starter I actually need
+  // to fill that position." Two elite RBs (McCaffrey/Walker) give RB a high
+  // floor even with zero bench depth; a WR room that's just Watson plus
+  // replacement-level options gives WR a low (or negative) floor even if you
+  // technically have "enough" WRs. Returns a multiplier per position: >1
+  // means "this position is a real hole, weight free agents here higher,"
+  // <1 means "already strong here, a bench stash barely moves the needle."
+  // Deliberately a dampener, not a filter — it only scales the cross-position
+  // ranking score, so a free agent who's a clear individual upgrade still
+  // surfaces via the separate, unaffected "Add now" check below.
+  // Dedicated, non-blended slot counts (e.g. the literal 2 'RB' slots) — as
+  // opposed to getPositionStarterCounts(), which fractionally credits a
+  // shared FLEX slot to BOTH RB and WR for league-wide replacement-level
+  // sizing. That blending is right for "how big is the startable pool
+  // league-wide" but wrong here: a single FLEX slot isn't an extra required
+  // starter at every position that could fill it, so using the blended count
+  // would double-count it as a RB need AND a WR need simultaneously.
+  function getDedicatedStarterCounts(){
+    const counts = { QB:0, RB:0, WR:0, TE:0, DST:0, K:0 };
+    const raw = (league && league.rosterPositions) ? league.rosterPositions : ['QB','RB','RB','WR','WR','TE','DST','K'];
+    raw.forEach(slot=>{
+      const pos = slot === 'DEF' ? 'DST' : slot;
+      if(counts.hasOwnProperty(pos)) counts[pos]++;
+    });
+    return counts;
+  }
+
+  function computePositionNeedMultipliers(week, replacementLevels){
+    const multipliers = {};
+    if(!league || league.myRosterId==null){ FA_POSITIONS.forEach(p=>multipliers[p]=1); return multipliers; }
+    const dedicated = getDedicatedStarterCounts();
+    const mine = enrichRoster(league.myRosterId);
+    FA_POSITIONS.forEach(pos=>{
+      const replacement = replacementLevels[pos]||0;
+      const required = Math.max(1, dedicated[pos]||0);
+      const vorps = mine.filter(p=>p.pos===pos)
+        .map(p => (p.projPts!=null ? p.projPts : 0) - replacement)
+        .sort((a,b)=>b-a);
+      // A starter slot you haven't filled is exactly as bad as a
+      // replacement-level (VORP 0) player — not a missing data point.
+      while(vorps.length < required) vorps.push(0 - replacement);
+      const floorVorp = vorps[required - 1];
+      multipliers[pos] = Math.max(0.4, Math.min(1.6, 1 - floorVorp * 0.08));
+    });
+    return multipliers;
+  }
+
+  function freeAgentRationale(a){
+    let note = '';
+    if(a.needMultiplier <= 0.7) note = ` Your ${a.pos} starters are already strong, so this matters less than the ranking alone suggests.`;
+    else if(a.needMultiplier >= 1.3) note = ` Your depth at ${a.pos} beyond your current starter(s) is thin, so this carries extra weight.`;
+
+    // "Strong market consensus" here means season-long position ADP, not a
+    // news feed — the best computable proxy for "more upside than this
+    // week's number shows" (role/trajectory the market has priced in)
+    // without actually reading articles.
+    const strongRos = a.rosScore >= 40;
+    // Always name the specific player explicitly here, never "them" — this
+    // note gets appended right after sentences that also name a drop
+    // candidate, where a pronoun is genuinely ambiguous about which player
+    // it refers to.
+    const rosNote = strongRos ? ` Market consensus also has ${a.name} as the #${Math.round(a.posAdp)} ${a.pos} overall for the season — real long-term upside beyond this week's number.` : '';
+
+    if(a.verdict === 'addnow'){
+      if(a.noRosterAtPos) return `You have nobody rostered at ${a.pos} at all — this would be a straight add, not a swap. You'd need to free a roster spot from elsewhere.${rosNote}`;
+      const dp = a.drop.projPts!=null ? ` (${a.drop.projPts} proj)` : '';
+      const ap = a.projPts!=null ? ` (${a.projPts} proj)` : '';
+      return `${a.name} projects ahead of your current ${a.drop.name}${dp} at ${a.pos}${ap} — a real upgrade, not a lateral swap. Consider dropping ${a.drop.name}.${rosNote}`;
+    }
+    if(a.verdict === 'streamer'){
+      const matchup = a.opponent ? ` ${a.isHome?'vs':'@'} ${a.opponent}` : '';
+      return `${a.pos} is matchup-driven week to week — plug ${a.name} in for this week's game${matchup}, not a long-term hold.`;
+    }
+    if(a.verdict === 'stash'){
+      // Lower weekly output, but the market sees real long-term value — the
+      // "Marvin Harrison vs. Courtland Sutton" case: don't just rank by this
+      // week's points when the stash case is really about where their role
+      // is headed.
+      if(strongRos && (a.vorp == null || a.vorp <= 0)){
+        const weekly = a.projPts!=null ? `projects modestly this week (${a.projPts} pts)` : `has no live projection yet`;
+        return `${a.name} only ${weekly}, but market consensus ranks ${a.name} the #${Math.round(a.posAdp)} ${a.pos} overall for the season — real long-term upside this week's number doesn't capture. Worth a bench stash.${note}`;
+      }
+      if(a.trendingAddCount >= 500) return `Trending — +${a.trendingAddCount.toLocaleString()} adds leaguewide in the last 24h. Role may be expanding faster than projections show yet; worth a bench stash if you have room.${note}${rosNote}`;
+      return `Projects above a replacement-level ${a.pos} this week (${a.projPts} pts) but not clearly better than your current room there — worth stashing to monitor, not an automatic start.${note}${rosNote}`;
+    }
+    // watch
+    // A real positive signal CAN still exist here — it just didn't clear the
+    // need bar (position already locked). Say that explicitly rather than
+    // falsely implying there's nothing there.
+    const hadSignal = (a.vorp != null && a.vorp > 0) || a.trendingAddCount >= 500 || strongRos;
+    if(hadSignal && a.needMultiplier <= 0.7){
+      if(strongRos) return `Market consensus ranks ${a.name} the #${Math.round(a.posAdp)} ${a.pos} overall for the season, but your ${a.pos} room is already strong — not worth a roster spot given how little a hole there actually is right now.`;
+      if(a.trendingAddCount >= 500) return `Trending (+${a.trendingAddCount.toLocaleString()} adds leaguewide), but your ${a.pos} room is already strong — not worth a roster spot given how little a hole there actually is right now.`;
+      return `Projects above replacement at ${a.pos} this week (${a.projPts} pts), but your ${a.pos} room is already strong — not worth a roster spot given how little a hole there actually is right now.`;
+    }
+    if(a.onBoard) return `On your board at rank ${a.rank}, but Sleeper hasn't generated a live projection for them yet — low priority until it does.${note}`;
+    return `No real signal yet — not projected, not on your board. Low priority unless something changes.${note}`;
+  }
+
+  // Unified, cross-position free agent list. Ranked by value-over-replacement
+  // (so a TE and a WR are directly comparable), then tagged with a verdict —
+  // Add now / Streamer / Stash / Watch — so the list tells you what to DO,
+  // not just who's good.
   function computeFreeAgents(){
     if(!league) return [];
     const rosteredIds = new Set();
     league.rosters.forEach(r => (r.players||[]).forEach(id => rosteredIds.add(id)));
 
-    const agents = Object.entries(sleeperPlayerDB)
-      .filter(([id, sp]) => !rosteredIds.has(id) && sp.status === 'Active')
+    const week = league.week;
+    const wd = league.weekData && league.weekData[week];
+    const replacementLevels = computeReplacementLevels(week, wd);
+    const needMultipliers = computePositionNeedMultipliers(week, replacementLevels);
+
+    let agents = Object.entries(sleeperPlayerDB)
+      // Sleeper's `status` field alone isn't enough — it still tags thousands of
+      // long-retired or out-of-league players (e.g. Le'Veon Bell) as 'Active'
+      // because it only reflects their last known status, not whether they're
+      // currently on an NFL roster. `team` being empty is what actually means
+      // "not on an NFL team right now" — so require both.
+      .filter(([id, sp]) => !rosteredIds.has(id) && sp.status === 'Active' && sp.team && FA_POSITIONS.includes(sp.pos))
       .map(([id, sp])=>{
         const boardMatch = players.find(p => normalizeName(p.name) === normalizeName(sp.name));
         const rank = boardMatch ? boardMatch.rank : sp.search_rank + 300;
-        return { sleeperId:id, name:sp.name, pos:sp.pos, team:sp.team, injury: classifySleeperInjury(sp.injury_status), rank, onBoard: !!boardMatch };
+        const byeWeek = sp.team ? (BYE_WEEKS[sp.team] || null) : null;
+        const weekGame = (sp.team && SCHEDULE[sp.team]) ? SCHEDULE[sp.team][week] : null;
+        const gameInfo = (wd && wd.gameInfo && sp.team) ? wd.gameInfo[sp.team] : null;
+        const projPts = (wd && wd.projections) ? wd.projections[id] : null;
+        const trendingAddCount = trendingAdds[id] || 0;
+        const posAdp = (wd && wd.rosAdp) ? wd.rosAdp[id] : null;
+        const agent = {
+          sleeperId:id, name:sp.name, pos:sp.pos, team:sp.team,
+          injury: classifySleeperInjury(sp.injury_status), rank, adjust: 0, byeWeek,
+          opponent: weekGame ? weekGame[0] : null,
+          isHome: weekGame ? !!weekGame[1] : null,
+          kickoffLabel: gameInfo ? gameInfo.kickoffLabel : null,
+          projPts: (projPts!=null) ? projPts : null,
+          trendingAddCount,
+          posAdp: (posAdp!=null) ? posAdp : null,
+          onBoard: !!boardMatch,
+          needMultiplier: needMultipliers[sp.pos] || 1
+        };
+        agent.vorp = (agent.projPts != null) ? Math.round((agent.projPts - (replacementLevels[sp.pos]||0)) * 10) / 10 : null;
+        // Season-long market consensus (Sleeper's position ADP) as a proxy for
+        // "upside beyond this week's number" — not a news feed, but a real,
+        // computable signal that reflects the market's broader view of a
+        // player's role/trajectory rather than just this week's matchup. A
+        // rookie the market has rising, drafted ~WR40, scores higher here than
+        // a known-ceiling veteran drafted ~WR90, regardless of either one's
+        // single-week projection.
+        agent.rosScore = (agent.posAdp != null) ? Math.max(0, 100 - agent.posAdp) : 0;
+
+        // Platform-wide add volume is this week's buzz, not next week's — it's a
+        // "owners are moving before the projection models have" signal, so it
+        // only nudges the score (log-scaled, capped) rather than dominating it.
+        const trendingBoost = trendingAddCount > 0 ? Math.min(25, Math.log10(trendingAddCount + 1) * 7) : 0;
+
+        // Tiered scoring: a real VORP-based score (comparable across
+        // positions) always outranks a board-only fallback, which outranks a
+        // "no weekly signal, but real season-long market value" tier, which
+        // outranks a total unknown — regardless of magnitude within a tier.
+        // (NOT reusing scoreForLineup()'s rank-based fallback here: for a
+        // free agent without a board match, "rank" is sp.search_rank + 300 —
+        // Sleeper's generic player-popularity index, not a fantasy signal —
+        // and it was scoring deep unprojected bench players above
+        // legitimately-projected ones.)
+        // The position-need multiplier only scales the VORP component — it
+        // dampens or boosts how much this position's free agents matter
+        // relative to other positions, but never flips tiers (a real
+        // projected player still always outranks a board-only guess, etc).
+        let baseScore;
+        if(agent.vorp != null){ baseScore = 1000 + agent.vorp * 30 * agent.needMultiplier; }
+        else if(boardMatch){ baseScore = (300 - boardMatch.rank) * 0.5; }
+        else if(agent.rosScore > 0){ baseScore = agent.rosScore * 2; }
+        else { baseScore = -1000; }
+        // Small universal nudge within whatever tier a player landed in — this
+        // is the Marvin-Harrison-vs-Courtland-Sutton case: when BOTH have real
+        // weekly projections, the lower-scoring one can still edge ahead if the
+        // market sees meaningfully more long-term value in them, without this
+        // alone ever being enough to jump a player into a higher tier.
+        agent.score = baseScore + trendingBoost + agent.rosScore * 1.2;
+        if(agent.byeWeek === week) agent.score -= 1000;
+        else if(agent.injury === 'LT') agent.score -= 400;
+        else if(agent.injury === 'Q') agent.score -= 8;
+        return agent;
       })
-      .sort((a,b)=>a.rank-b.rank);
+      .sort((a,b)=>b.score-a.score);
+
+    // Verdicts — only the single best free agent at each position is checked
+    // as a potential roster upgrade; if it clears the bar, every weaker
+    // free agent at that position would too, which would just be redundant
+    // "sign this instead" rows for the same slot.
+    const weakestByPos = getMyWeakestByPos(week);
+    const bestSeenAtPos = new Set();
+    agents.forEach(a=>{
+      const isBestAtPos = !bestSeenAtPos.has(a.pos);
+      bestSeenAtPos.add(a.pos);
+
+      const weakest = weakestByPos[a.pos];
+      const lineupScore = scoreForLineup(a, week);
+      const hasPositiveSignal = (a.vorp != null && a.vorp > 0) || a.trendingAddCount >= 500 || a.rosScore >= 40;
+      if(isBestAtPos && !weakest){
+        a.verdict = 'addnow'; a.noRosterAtPos = true;
+      } else if(isBestAtPos && weakest && lineupScore > weakest._score + 1){
+        a.verdict = 'addnow'; a.drop = weakest;
+      } else if(a.pos === 'DST' || a.pos === 'K'){
+        // DST/K are matchup-driven week to week regardless of roster depth —
+        // there's no "already strong at DST" concept the way there is at a
+        // skill position, so these are never need-gated.
+        a.verdict = hasPositiveSignal ? 'streamer' : 'watch';
+      } else if(hasPositiveSignal && a.needMultiplier > 0.7){
+        // A real signal (projects well, trending, strong season-long value)
+        // ISN'T automatically worth a bench spot — not if the position is
+        // already a lock (e.g. two elite, bye-week-complementary starters
+        // at a single-starter position like QB). Without this gate, a
+        // top-15-ADP backup QB would get flagged "Stash" purely because the
+        // market likes them in general, even though a 1-QB roster that
+        // already has 2 studs has no realistic use for a 3rd.
+        a.verdict = 'stash';
+      } else {
+        a.verdict = 'watch';
+      }
+      a.rationale = freeAgentRationale(a);
+    });
 
     return agents;
   }
 
-  const FA_UPGRADE_POSITIONS = ['QB','RB','WR','TE','DST','K'];
-
-  function computeFreeAgentUpgrades(){
-    if(!league || league.myRosterId==null) return [];
-    const myRoster = enrichRoster(league.myRosterId);
-    const agents = computeFreeAgents();
-
-    const upgrades = [];
-    FA_UPGRADE_POSITIONS.forEach(pos=>{
-      const myAtPos = myRoster.filter(p=>p.pos===pos).sort((a,b)=>a.rank-b.rank);
-      const bestFA = agents.find(a=>a.pos===pos);
-      if(!bestFA) return;
-
-      if(!myAtPos.length){
-        // You have nobody at this position at all — flag it, but don't guess who else to drop
-        upgrades.push({ pos, sign: bestFA, drop: null, noRosterAtPos: true });
-        return;
-      }
-
-      const weakest = myAtPos[myAtPos.length - 1];
-      if(bestFA.rank < weakest.rank){
-        upgrades.push({ pos, sign: bestFA, drop: weakest, rankGain: weakest.rank - bestFA.rank });
-      }
-    });
-
-    upgrades.sort((a,b) => (b.rankGain||0) - (a.rankGain||0));
-    return upgrades;
-  }
-
-  function renderFreeAgentUpgrades(){
-    const el = document.getElementById('faUpgradeList');
-    if(!league || league.myRosterId==null){ el.innerHTML=''; return; }
-    const upgrades = computeFreeAgentUpgrades();
-    if(!upgrades.length){
-      el.innerHTML = '<div class="panel-sub">No clear sign-over-drop upgrades right now — your roster already beats the best available free agent at every position.</div>';
-      return;
-    }
-    el.innerHTML = upgrades.map(u=>{
-      if(u.noRosterAtPos){
-        return `<div class="trade-card">
-          <div class="trade-card-partner">${u.sign.name} <span class="pos-pill">${u.pos}</span></div>
-          <div class="trade-rationale">You have nobody rostered at ${u.pos} at all — this would be a straight add, not a like-for-like swap. You'd need to drop someone from a deeper position to make room.</div>
-        </div>`;
-      }
-      return `<div class="trade-card">
-        <div class="trade-sides">
-          <div class="trade-side">
-            <div class="trade-side-label">Drop</div>
-            ${u.drop.name} (${u.pos}, rank ${u.drop.rank})
-          </div>
-          <div class="trade-arrow">⇄</div>
-          <div class="trade-side">
-            <div class="trade-side-label">Sign</div>
-            ${u.sign.name} (${u.pos}, rank ${u.sign.rank})
-          </div>
-        </div>
-        <div class="trade-rationale">${u.sign.name} outranks your current weakest ${u.pos} by ${u.rankGain} spot${u.rankGain>1?'s':''} — a real upgrade, not just a lateral swap.</div>
-      </div>`;
-    }).join('');
-  }
-
   /* ---------------- Trade suggestions ---------------- */
-  const TRADE_POSITIONS = ['QB','RB','WR','TE','DST','K'];
-
-  // Classify each position on a roster as a 'need' (at or below starter
-  // requirement — one injury/bye from an empty slot), 'surplus' (real
-  // tradeable depth beyond a normal bench cushion), or 'balanced'.
-  function positionProfile(rosterId){
-    const enriched = enrichRoster(rosterId);
-    const r = cfg ? cfg.roster : { QB:1,RB:2,WR:2,TE:1,DST:1,K:1 };
-    const counts = {};
-    TRADE_POSITIONS.forEach(pos=> counts[pos] = enriched.filter(p=>p.pos===pos).sort((a,b)=>a.rank-b.rank));
-
-    const profile = {};
-    TRADE_POSITIONS.forEach(pos=>{
-      const starters = r[pos] || 0;
-      const have = counts[pos].length;
-      let status = 'balanced';
-      if(have <= starters) status = 'need';
-      else if(have >= starters + 2) status = 'surplus';
-      profile[pos] = { status, players: counts[pos], have, starters };
-    });
-    return profile;
-  }
-
   function teamLabel(rosterId){
     const roster = league.rosters.find(r=>r.roster_id===rosterId);
     const user = roster ? league.users.find(u=>u.user_id===roster.owner_id) : null;
     return (user && (user.metadata&&user.metadata.team_name)) || (user && user.display_name) || `Roster ${rosterId}`;
   }
 
+  // Cross-position trade value for one player. Unlike weekly lineup scoring
+  // (which deliberately prefers live projections), trades are a season-long
+  // decision — so this prefers the market's OVERALL (not position-specific)
+  // consensus draft value, which already bakes in position scarcity through
+  // real draft behavior (a QB and a RB taken at the same overall pick ARE
+  // treated as comparable value by the market). Falls back to Sleeper's
+  // generic, also-cross-position search_rank when no live ADP exists yet.
+  // Deliberately independent of your manually-pasted board, for the same
+  // reason free-agent ranking moved off it: it goes stale, market data doesn't.
+  function computeTradeValue(sleeperId, wd){
+    const sp = sleeperPlayerDB[sleeperId];
+    const overallAdp = (wd && wd.overallAdp) ? wd.overallAdp[sleeperId] : null;
+    const marketRank = overallAdp != null ? overallAdp : (sp ? sp.search_rank : 9999);
+    // Fantasy trade value is heavily front-loaded — the gap between the #1
+    // and #10 player at a position is enormous, while the gap between #150
+    // and #160 is nearly nothing. A LINEAR transform of rank flattens that
+    // curve away: at the elite end (where most rostered starters live), tiny
+    // real rank differences then produce value swings as large as the
+    // need/surplus margins, misclassifying genuinely solid starters as
+    // "needs." A log transform matches the real shape instead — steep at
+    // the top, flat at the bottom — so a fixed margin means roughly the same
+    // thing (a comparable % shift in standing) at every tier.
+    return Math.max(0, 300 - 50 * Math.log(Math.max(1, marketRank)));
+  }
+
+  // The trade-value equivalent of computeReplacementLevels() — same pattern
+  // (Nth-best player at the position, N = starters × teams), just measuring
+  // "is this a real asset" in season-long market-value terms instead of this
+  // week's projected points.
+  function computeTradeReplacementLevels(wd){
+    const starters = getPositionStarterCounts();
+    const numTeams = (league && league.rosters) ? league.rosters.length : 10;
+    const pool = { QB:[], RB:[], WR:[], TE:[], DST:[], K:[] };
+    Object.entries(sleeperPlayerDB).forEach(([id, sp])=>{
+      if(sp.status !== 'Active' || !sp.team || !pool[sp.pos]) return;
+      pool[sp.pos].push(computeTradeValue(id, wd));
+    });
+    const replacement = {};
+    FA_POSITIONS.forEach(pos=>{
+      const list = pool[pos].sort((a,b)=>b-a);
+      if(!list.length){ replacement[pos] = 0; return; }
+      const idx = Math.max(0, Math.min(list.length - 1, Math.round(numTeams * (starters[pos]||0)) - 1));
+      replacement[pos] = list[idx];
+    });
+    return replacement;
+  }
+
+  // Tuned against the log-shaped 0-300 trade-value scale above (verified
+  // against real player data: a genuine WR3/RB3-quality depth piece clears
+  // replacement by roughly 20-25 points on this scale — a flat-scale margin
+  // like 40 would never fire).
+  const TRADE_NEED_MARGIN = 15;    // weakest starter within this much of replacement = a real hole
+  const TRADE_SURPLUS_MARGIN = 18; // bench piece this far above replacement = genuinely tradeable value, not just filler
+
+  // Per-position read on ANY roster in the league (not just yours): who's
+  // starting there, how good they really are (market value, not raw count),
+  // and what's sitting behind them that's actually worth including in a
+  // trade — as opposed to the old version of this, which classified a
+  // position as "surplus" purely by HAVING extra bodies there, regardless of
+  // whether those bodies had any real value.
+  function getRosterTradeProfile(rosterId, wd, tradeReplacement){
+    const enriched = enrichRoster(rosterId);
+    const dedicated = getDedicatedStarterCounts();
+    const profile = {};
+    FA_POSITIONS.forEach(pos=>{
+      const atPos = enriched.filter(p=>p.pos===pos)
+        .map(p => Object.assign({}, p, { tradeValue: computeTradeValue(p.sleeperId, wd) }))
+        .sort((a,b)=>b.tradeValue-a.tradeValue);
+      const required = Math.max(1, dedicated[pos]||0);
+      const replacement = tradeReplacement[pos]||0;
+      const starters = atPos.slice(0, required);
+      const depth = atPos.slice(required);
+      const weakestStarterValue = starters.length ? starters[starters.length-1].tradeValue : 0;
+      const isNeed = atPos.length < required || weakestStarterValue <= replacement + TRADE_NEED_MARGIN;
+      const surplus = depth.filter(p => p.tradeValue > replacement + TRADE_SURPLUS_MARGIN);
+      profile[pos] = { status: isNeed ? 'need' : (surplus.length ? 'surplus' : 'balanced'), starters, depth, surplus, weakestStarterValue, replacement };
+    });
+    return profile;
+  }
+
+  function buildTradeRationale(c){
+    const fairness = c.fairnessGap <= 15
+      ? 'market value calls this close to even'
+      : (c.give.tradeValue > c.get.tradeValue
+        ? "you're giving slightly more value on paper, which makes this an easier yes for them"
+        : "you're getting slightly more value on paper — a reasonable, not greedy, ask");
+    return `${c.partnerName} is thin at ${c.givePos} — ${c.give.name} is a real upgrade for them there, not just a body. In return, ${c.get.name} addresses your actual thin spot at ${c.getPos} (your current room there barely clears replacement level). ${fairness[0].toUpperCase()}${fairness.slice(1)}.`;
+  }
+
+  // Scans every other roster for a mutual-fit trade, scores each candidate on
+  // fairness (how close the market values are — a lopsided trade just gets
+  // rejected) plus how much real need it fills on BOTH sides, and returns
+  // only the strongest 2-3 ideas league-wide — the trades an actual GM would
+  // bother pitching, not one forced pairing per team regardless of quality.
   function computeTradeSuggestions(){
     if(!league || league.myRosterId==null) return [];
-    const myProfile = positionProfile(league.myRosterId);
-    const mySurplus = TRADE_POSITIONS.filter(pos=>myProfile[pos].status==='surplus');
-    const myNeeds = TRADE_POSITIONS.filter(pos=>myProfile[pos].status==='need');
-    if(!mySurplus.length || !myNeeds.length) return []; // nothing realistic to offer, or nothing needed
+    const week = league.week;
+    const wd = league.weekData && league.weekData[week];
+    const tradeReplacement = computeTradeReplacementLevels(wd);
+    const myProfile = getRosterTradeProfile(league.myRosterId, wd, tradeReplacement);
 
-    const suggestions = [];
+    const mySurplusPositions = FA_POSITIONS.filter(pos=>myProfile[pos].status==='surplus');
+    const myNeedPositions = FA_POSITIONS.filter(pos=>myProfile[pos].status==='need');
+    if(!mySurplusPositions.length || !myNeedPositions.length) return [];
+
+    const candidates = [];
     league.rosters.forEach(r=>{
       if(r.roster_id === league.myRosterId) return;
-      const theirProfile = positionProfile(r.roster_id);
-      // Positions where they have surplus AND I have need
-      const theyCanGive = myNeeds.filter(pos => theirProfile[pos].status==='surplus');
-      // Positions where I have surplus AND they have need
-      const theyWant = mySurplus.filter(pos => theirProfile[pos].status==='need');
-      if(!theyCanGive.length || !theyWant.length) return;
+      const theirProfile = getRosterTradeProfile(r.roster_id, wd, tradeReplacement);
 
-      // Pick one pairing: the position pair with players closest in rank value,
-      // so the suggestion is realistic rather than lopsided.
-      let best = null;
-      theyWant.forEach(givePos=>{
-        // Offer my weakest surplus piece at givePos (beyond what I need to start), not my best
-        const myTradeable = myProfile[givePos].players.slice(myProfile[givePos].starters);
-        theyCanGive.forEach(getPos=>{
-          const theirTradeable = theirProfile[getPos].players.slice(theirProfile[getPos].starters);
-          myTradeable.forEach(mine=>{
-            theirTradeable.forEach(theirs=>{
-              const diff = Math.abs(mine.rank - theirs.rank);
-              if(!best || diff < best.diff){
-                best = { diff, give: mine, get: theirs, givePos, getPos };
+      let bestForPartner = null;
+      mySurplusPositions.forEach(givePos=>{
+        if(theirProfile[givePos].status !== 'need') return; // they have to actually want it
+        myNeedPositions.forEach(getPos=>{
+          if(getPos === givePos) return;
+          if(theirProfile[getPos].status !== 'surplus') return; // they have to actually have it to give
+
+          myProfile[givePos].surplus.forEach(mine=>{
+            theirProfile[getPos].surplus.forEach(theirs=>{
+              const fairnessGap = Math.abs(mine.tradeValue - theirs.tradeValue);
+              const myGain = theirs.tradeValue - myProfile[getPos].replacement;
+              const theirGain = mine.tradeValue - theirProfile[givePos].replacement;
+              // Fair value matters most (an obviously lopsided trade just gets
+              // declined, so it's not a useful "pitch"); real mutual need-filling
+              // matters too, but at lower weight — otherwise this would just
+              // recommend whichever pairing has the single biggest numbers.
+              const pitchScore = -fairnessGap + (myGain + theirGain) * 0.6;
+              if(!bestForPartner || pitchScore > bestForPartner.pitchScore){
+                bestForPartner = {
+                  partnerRosterId: r.roster_id, partnerName: teamLabel(r.roster_id),
+                  give: mine, get: theirs, givePos, getPos, fairnessGap, myGain, theirGain, pitchScore
+                };
               }
             });
           });
         });
       });
-      if(best){
-        suggestions.push({
-          partnerRosterId: r.roster_id,
-          partnerName: teamLabel(r.roster_id),
-          give: best.give, get: best.get, givePos: best.givePos, getPos: best.getPos
-        });
-      }
+      if(bestForPartner) candidates.push(bestForPartner);
     });
 
-    suggestions.sort((a,b)=>Math.abs(a.give.rank-a.get.rank) - Math.abs(b.give.rank-b.get.rank));
-    return suggestions.slice(0, 6);
+    // One idea per partner (their best option) — then only the strongest
+    // ideas overall, across however many different teams that takes.
+    candidates.sort((a,b)=>b.pitchScore-a.pitchScore);
+    const top = candidates.slice(0, 3);
+    top.forEach(c=> c.rationale = buildTradeRationale(c));
+    return top;
   }
 
   /* ---------------- Rendering ---------------- */
@@ -2356,7 +2734,15 @@
   function renderMyBench(){
     const el = document.getElementById('myBenchList');
     if(!league || league.myRosterId==null){ el.innerHTML=''; return; }
-    const { bench, slotDefs } = computeBestLineup(league.myRosterId, league.week);
+    // "Your bench" must mean your ACTUAL live Sleeper bench (matching how
+    // "Their bench" is computed below), not computeBestLineup()'s suggested
+    // bench — those can disagree whenever this app's own scoring would have
+    // started someone different than you actually did, which looked like a
+    // sync bug (e.g. showing the wrong player benched) but was really this
+    // panel quietly showing the algorithm's opinion instead of reality.
+    const slotDefs = getWeeklySlotDefs();
+    const liveStarterIds = new Set(getLiveStarters(league.myRosterId, league.week).filter(p=>!p._empty).map(p=>p.sleeperId));
+    const bench = enrichRoster(league.myRosterId).filter(p => !liveStarterIds.has(p.sleeperId));
     if(!bench.length){ el.innerHTML = '<div class="panel-sub">No bench players found.</div>'; return; }
 
     el.innerHTML = bench.map(p=>{
@@ -2400,203 +2786,212 @@
     renderWeeklyDashboard();
   });
 
+  const VERDICT_LABELS = { addnow: 'Add now', streamer: 'Streamer', stash: 'Stash', watch: 'Watch' };
+  const FA_DISPLAY_LIMIT = 20;
+  const DEEP_DIVE_VERDICT_LABELS = {
+    'STRONG ADD': { cls: 'addnow', label: 'Strong add' },
+    'SPECULATIVE ADD': { cls: 'stash', label: 'Speculative add' },
+    'MONITOR': { cls: 'watch', label: 'Monitor' },
+    'PASS': { cls: 'injury-lt', label: 'Pass' }
+  };
+
+  // Last rendered free-agent list, keyed by sleeperId — lets the dblclick
+  // handler (which only gets a DOM element, not the data) find the full
+  // computed agent object (projections, VORP, rationale, etc.) to build the
+  // deep-dive prompt from, without recomputing computeFreeAgents() again.
+  let lastFreeAgentsById = {};
+  let expandedFreeAgentId = null;
+
+  function buildFreeAgentDeepDivePrompt(agent){
+    const week = league.week;
+    const weakest = (league.myRosterId!=null) ? getMyWeakestByPos(week)[agent.pos] : null;
+    const lines = [];
+    lines.push(`You are an expert NFL fantasy football analyst with live web access. I'm deciding whether to pick up one specific free agent in my league — research them specifically, don't just restate the numbers I give you below.`);
+    lines.push(`\nPlayer: ${agent.name} (${agent.pos}, ${agent.team})`);
+    if(agent.opponent) lines.push(`This week's matchup: ${agent.isHome?'vs':'@'} ${agent.opponent}`);
+    if(agent.projPts!=null) lines.push(`This week's live Sleeper projection: ${agent.projPts} pts`);
+    if(agent.posAdp!=null) lines.push(`Season-long market consensus: #${Math.round(agent.posAdp)} ${agent.pos} overall (position ADP)`);
+    if(agent.trendingAddCount) lines.push(`Waiver-wire momentum: +${agent.trendingAddCount.toLocaleString()} adds leaguewide in the last 24h`);
+    if(agent.injury) lines.push(`Injury designation: ${agent.injury === 'LT' ? 'long-term / likely out' : 'questionable'}`);
+    if(weakest) lines.push(`My current weakest rostered ${agent.pos}: ${weakest.name} (${weakest.projPts!=null ? weakest.projPts+' proj pts this week' : 'rank '+weakest.rank})`);
+    else lines.push(`I currently have nobody rostered at ${agent.pos} at all.`);
+    lines.push(`\nOur internal model's read on them: ${VERDICT_LABELS[agent.verdict]} — ${agent.rationale}`);
+    lines.push(`\nSearch for current news specifically on ${agent.name} — injury status, snap counts / target share / carry share trend over the last 1-2 weeks, depth chart or role changes, and any beat-reporter notes — then weigh that against the numbers above.`);
+    lines.push(`\nRespond in exactly this structure:\nLine 1: exactly one of STRONG ADD / SPECULATIVE ADD / MONITOR / PASS (nothing else on that line)\nThen 2-4 sentences explaining your reasoning — cite what you found in your research and say whether it agrees or disagrees with our internal model's read.`);
+    return lines.join('\n');
+  }
+
+  async function runFreeAgentDeepDive(sleeperId){
+    const agent = lastFreeAgentsById[sleeperId];
+    if(!agent || !league) return;
+    const apiKey = localStorage.getItem(ANTHROPIC_KEY_STORAGE);
+    league.freeAgentDeepDives = league.freeAgentDeepDives || {};
+    if(!apiKey){
+      league.freeAgentDeepDives[sleeperId] = { status:'error', text:'Save your Anthropic API key first, in "Ask about your lineup" below.' };
+      renderFreeAgents();
+      return;
+    }
+    league.freeAgentDeepDives[sleeperId] = { status:'loading' };
+    renderFreeAgents();
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(()=>controller.abort(), 90000);
+    try{
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: AI_ANALYST_MODEL,
+          max_tokens: 700,
+          messages: [{ role: 'user', content: buildFreeAgentDeepDivePrompt(agent) }],
+          // Scoped to one player, so far fewer searches are needed than a
+          // full-lineup analysis — keeps this fast and cheap per lookup.
+          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }]
+        })
+      });
+      clearTimeout(timeoutId);
+
+      if(!res.ok){
+        const errBody = await res.text();
+        let msg = `Request failed (HTTP ${res.status}).`;
+        if(res.status===401) msg = 'That API key was rejected — double check it was copied correctly.';
+        else if(res.status===429) msg = 'Rate limited by Anthropic — wait a moment and try again.';
+        league.freeAgentDeepDives[sleeperId] = { status:'error', text: msg + ' ' + errBody.slice(0,200) };
+        renderFreeAgents();
+        return;
+      }
+
+      const data = await res.json();
+      const fullText = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n\n').trim();
+      const firstLine = fullText.split('\n')[0].trim().toUpperCase();
+      const verdictKey = Object.keys(DEEP_DIVE_VERDICT_LABELS).find(k => firstLine.includes(k));
+      const body = verdictKey ? fullText.slice(fullText.indexOf('\n')+1).trim() : fullText;
+
+      league.freeAgentDeepDives[sleeperId] = { status:'done', verdict: verdictKey || null, text: body, fetchedAt: Date.now() };
+      saveState();
+      renderFreeAgents();
+    } catch(e){
+      clearTimeout(timeoutId);
+      league.freeAgentDeepDives[sleeperId] = { status:'error', text: (e.name === 'AbortError')
+        ? 'Timed out waiting for a response after 90s — try again.'
+        : `Could not reach the Anthropic API (${e.message}).` };
+      renderFreeAgents();
+    }
+  }
+
+  function toggleFreeAgentDeepDive(sleeperId){
+    if(expandedFreeAgentId === sleeperId){
+      expandedFreeAgentId = null;
+      renderFreeAgents();
+      return;
+    }
+    expandedFreeAgentId = sleeperId;
+    const existing = league.freeAgentDeepDives && league.freeAgentDeepDives[sleeperId];
+    if(!existing || existing.status === 'error'){
+      runFreeAgentDeepDive(sleeperId); // also re-renders once it resolves
+    } else {
+      renderFreeAgents();
+    }
+  }
+
   function renderFreeAgents(){
     const el = document.getElementById('freeAgentList');
     if(!league){ el.innerHTML=''; return; }
-    const agents = computeFreeAgents();
-    const byPos = {};
-    agents.forEach(a=>{ (byPos[a.pos]=byPos[a.pos]||[]).push(a); });
+    const agents = computeFreeAgents()
+      // A total unknown (no projection, not on your board) is noise unless
+      // the waiver wire is already moving on them faster than projections, or
+      // the market's season-long view of them is real — drop the rest so the
+      // list stays to things worth actually looking at.
+      .filter(a => a.verdict !== 'watch' || a.trendingAddCount >= 500 || a.onBoard || a.rosScore >= 40)
+      .slice(0, FA_DISPLAY_LIMIT);
 
-    // Surface your thinnest positions first (TE flagged as a known pain point)
-    const posOrder = ['TE','RB','WR','QB','DST','K'];
-    let html = '';
-    posOrder.forEach(pos=>{
-      const list = (byPos[pos]||[]).slice(0,6);
-      if(!list.length) return;
-      html += `<div class="fa-group-label">${pos}</div>`;
-      html += list.map(a=>`
-        <div class="fa-row">
-          <span>${a.name} <span class="pos-pill">${a.team||'—'}</span>${a.injury==='LT'?' <span class="tag injury-lt">Long-term</span>':''}</span>
-          <span class="lineup-meta">${a.onBoard ? `Rank ${a.rank}` : 'Not on your board'}</span>
+    lastFreeAgentsById = {};
+    agents.forEach(a => lastFreeAgentsById[a.sleeperId] = a);
+
+    if(!agents.length){
+      el.innerHTML = '<div class="panel-sub">No free agent data yet — sync a week first.</div>';
+      return;
+    }
+
+    el.innerHTML = agents.map(a=>{
+      const matchup = a.opponent ? `${a.isHome?'vs':'@'} ${a.opponent}` : '';
+      const proj = a.projPts!=null ? `Proj ${a.projPts}` : (a.onBoard ? `Rank ${a.rank}` : 'No projection yet');
+      const trending = a.trendingAddCount >= 500 ? `🔥 +${a.trendingAddCount.toLocaleString()} adds` : '';
+      const ros = a.rosScore >= 40 ? `📈 ROS #${Math.round(a.posAdp)} ${a.pos}` : '';
+      const meta = [matchup, proj, trending, ros].filter(Boolean).join(' · ');
+      const injuryTag = a.injury==='LT' ? ' <span class="tag injury-lt">Long-term</span>' : a.injury==='Q' ? ' <span class="tag injury-q">Q</span>' : '';
+
+      const isExpanded = expandedFreeAgentId === a.sleeperId;
+      const deepDive = league.freeAgentDeepDives && league.freeAgentDeepDives[a.sleeperId];
+      let deepDiveHtml = '';
+      if(isExpanded){
+        if(!deepDive || deepDive.status === 'loading'){
+          deepDiveHtml = `<div class="fa-deepdive"><div class="panel-sub">Researching ${a.name} — live web search, usually 10-30s…</div></div>`;
+        } else if(deepDive.status === 'error'){
+          deepDiveHtml = `<div class="fa-deepdive"><div class="panel-sub" style="color:var(--danger);">${deepDive.text}</div></div>`;
+        } else {
+          const vLabel = deepDive.verdict ? DEEP_DIVE_VERDICT_LABELS[deepDive.verdict] : null;
+          const vTag = vLabel ? `<span class="tag ${vLabel.cls}">${vLabel.label}</span>` : '';
+          deepDiveHtml = `<div class="fa-deepdive">
+            <div class="fa-card-top" style="margin-bottom:6px;"><span class="fa-card-name" style="font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-dim);">Deep dive (live news)</span>${vTag}</div>
+            <div class="fa-card-rationale">${deepDive.text}</div>
+          </div>`;
+        }
+      }
+
+      return `
+        <div class="fa-card${isExpanded?' expanded':''}" data-sleeper-id="${a.sleeperId}" title="Double-click for a live-news deep dive">
+          <div class="fa-card-top">
+            <span class="fa-card-name">${a.name} <span class="pos-pill">${a.pos} · ${a.team||'—'}</span>${injuryTag}</span>
+            <span class="tag ${a.verdict}">${VERDICT_LABELS[a.verdict]}</span>
+          </div>
+          <div class="lineup-meta">${meta}</div>
+          <div class="fa-card-rationale">${a.rationale}</div>
+          ${deepDiveHtml}
         </div>
-      `).join('');
-    });
-    el.innerHTML = html || '<div class="panel-sub">No free agent data yet — sync a week first.</div>';
+      `;
+    }).join('');
   }
+
+  document.getElementById('freeAgentList').addEventListener('dblclick', function(e){
+    const card = e.target.closest('.fa-card');
+    if(!card) return;
+    toggleFreeAgentDeepDive(card.dataset.sleeperId);
+  });
 
   function renderTradeSuggestions(){
     const el = document.getElementById('tradeSuggestionList');
     if(!league || league.myRosterId==null){ el.innerHTML=''; return; }
     const suggestions = computeTradeSuggestions();
     if(!suggestions.length){
-      el.innerHTML = '<div class="panel-sub">No clear mutual-fit trade found right now — either your roster is fairly balanced, or no other team\'s surplus/need lines up with yours. Check back after a few weeks of adds/drops shift things.</div>';
+      el.innerHTML = '<div class="panel-sub">No clear mutual-fit trade found right now — either your roster is fairly balanced, or no other team\'s surplus/need lines up with yours against real market value. Check back after a few weeks of adds/drops shift things.</div>';
       return;
     }
 
-    // Quick-scan summary: unique players worth offering vs. targeting, deduped across all partner matches
-    const offerMap = new Map(), targetMap = new Map();
-    suggestions.forEach(s=>{
-      offerMap.set(s.give.sleeperId, s.give);
-      targetMap.set(s.get.sleeperId, { player: s.get, from: s.partnerName });
-    });
-
-    const summaryHtml = `
-      <div class="trade-card" style="background:var(--panel);">
-        <div class="trade-card-partner">Quick scan</div>
-        <div class="trade-sides">
-          <div class="trade-side">
-            <div class="trade-side-label">Consider putting on the block</div>
-            ${[...offerMap.values()].map(p=>`${p.name} (${p.pos}, rank ${p.rank})`).join('<br>')}
-          </div>
-          <div class="trade-side">
-            <div class="trade-side-label">Worth targeting on other rosters</div>
-            ${[...targetMap.values()].map(t=>`${t.player.name} (${t.player.pos}, rank ${t.player.rank}) — ${t.from}`).join('<br>')}
-          </div>
-        </div>
-      </div>`;
-
-    el.innerHTML = summaryHtml + suggestions.map(s=>`
+    el.innerHTML = suggestions.map(s=>`
       <div class="trade-card">
-        <div class="trade-card-partner">${s.partnerName}</div>
+        <div class="trade-card-partner">Pitch to ${s.partnerName}</div>
         <div class="trade-sides">
           <div class="trade-side">
             <div class="trade-side-label">You give (${s.givePos})</div>
-            ${s.give.name} <span class="lineup-meta">Rank ${s.give.rank}</span>
+            ${s.give.name} <span class="lineup-meta">market value ${Math.round(s.give.tradeValue)}</span>
           </div>
           <div class="trade-arrow">⇄</div>
           <div class="trade-side">
             <div class="trade-side-label">You get (${s.getPos})</div>
-            ${s.get.name} <span class="lineup-meta">Rank ${s.get.rank}</span>
+            ${s.get.name} <span class="lineup-meta">market value ${Math.round(s.get.tradeValue)}</span>
           </div>
         </div>
-        <div class="trade-rationale">You have tradeable depth at ${s.givePos} while needing help at ${s.getPos}; ${s.partnerName} looks like the mirror image. Ranks are close, so this is a reasonable opening offer — not a final one.</div>
+        <div class="trade-rationale">${s.rationale}</div>
       </div>
     `).join('');
   }
-
-  /* ---------------- Trade block watch (manual paste, since Sleeper's real trade-block feed isn't reachable) ---------------- */
-  function parseTradeBlockNames(text){
-    const posCodes = new Set(['QB','RB','WR','TE','K','DST','DEF']);
-    const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
-    const names = [];
-    lines.forEach(line=>{
-      if(/^on the block$/i.test(line)) return;
-      // Skip chat-feed noise: timestamps, "reply", full announcement sentences, anything with a colon
-      if(/\breply\b/i.test(line)) return;
-      if(/\b\d+\s*(second|minute|hour|day|week)s?\s*ago\b/i.test(line)) return;
-      if(/trade block/i.test(line)) return;
-      if(line.includes(':')) return;
-      // Skip standalone "POS - TEAM" continuation lines (e.g. "WR - CLE")
-      const posOnly = line.match(/^([A-Z]{1,3})\s*-\s*[A-Z]{2,4}$/);
-      if(posOnly && posCodes.has(posOnly[1])) return;
-      // Strip a trailing "(POS - TEAM)" or "POS - TEAM" if it's attached to the same line as the name
-      const cleaned = line.replace(/\(?\b(QB|RB|WR|TE|K|DST|DEF)\b\s*-\s*[A-Z]{2,4}\)?\s*$/, '').trim();
-      if(cleaned) names.push(cleaned);
-    });
-    return [...new Set(names)];
-  }
-
-  function findPlayerAcrossLeague(name){
-    if(!league) return null;
-    const target = normalizeName(name);
-    for(const roster of league.rosters){
-      const enriched = enrichRoster(roster.roster_id);
-      const match = enriched.find(p => normalizeName(p.name) === target);
-      if(match) return { player: match, rosterId: roster.roster_id };
-    }
-    return null;
-  }
-
-  function analyzeTradeBlockPlayer(name){
-    const found = findPlayerAcrossLeague(name);
-    if(!found){
-      return { name, notFound: true };
-    }
-    const { player, rosterId } = found;
-    if(rosterId === league.myRosterId){
-      return { name, isMine: true, player };
-    }
-    const partnerName = teamLabel(rosterId);
-    const myProfile = positionProfile(league.myRosterId);
-    const pos = TRADE_POSITIONS.includes(player.pos) ? player.pos : null;
-    const profileAtPos = pos ? myProfile[pos] : null;
-
-    let verdict = 'unclear', rationale;
-    if(!profileAtPos){
-      verdict = 'unclear';
-      rationale = `${player.pos} isn't a position this app tracks surplus/need for — use your own judgment here.`;
-    } else if(profileAtPos.status === 'need'){
-      verdict = 'pursue';
-      rationale = `You're at or below your starting requirement at ${pos} — this would fill a real need, not just add depth.`;
-    } else if(profileAtPos.status === 'surplus'){
-      verdict = 'pass';
-      rationale = `You already have more ${pos} depth than your lineup needs — this would mostly sit on your bench unless it's a clear talent upgrade.`;
-    } else {
-      const posRoster = myProfile[pos].players;
-      const weakestStarter = posRoster[myProfile[pos].starters - 1];
-      if(weakestStarter && player.rank < weakestStarter.rank){
-        verdict = 'pursue';
-        rationale = `${pos} is balanced on your roster, but this player (rank ${player.rank}) would outrank your current weakest starter there (${weakestStarter.name}, rank ${weakestStarter.rank}) — a real upgrade, not just a lateral move.`;
-      } else {
-        verdict = 'unclear';
-        rationale = `${pos} is balanced on your roster and this isn't a clear upgrade over what you already have there — only worth it if the return cost is low.`;
-      }
-    }
-
-    // What you could realistically offer in return
-    let offer = null;
-    if(pos){
-      const mySurplusPositions = TRADE_POSITIONS.filter(p => myProfile[p].status==='surplus');
-      mySurplusPositions.forEach(givePos=>{
-        const tradeable = myProfile[givePos].players.slice(myProfile[givePos].starters);
-        tradeable.forEach(mine=>{
-          const diff = Math.abs(mine.rank - player.rank);
-          if(!offer || diff < offer.diff) offer = { diff, give: mine, givePos };
-        });
-      });
-    }
-
-    return { name, player, partnerName, verdict, rationale, offer };
-  }
-
-  function renderTradeBlockAnalysis(results){
-    const el = document.getElementById('tradeBlockResults');
-    if(!results.length){ el.innerHTML = ''; return; }
-    el.innerHTML = results.map(r=>{
-      if(r.notFound){
-        return `<div class="trade-card"><div class="trade-card-partner">${r.name}</div>
-          <div class="trade-rationale">Couldn't find this player on any roster in your league — check the spelling, or they may already be a free agent (in which case just add them, no trade needed).</div></div>`;
-      }
-      if(r.isMine){
-        return `<div class="trade-card"><div class="trade-card-partner">${r.name}</div>
-          <div class="trade-rationale">This is already on your own roster.</div></div>`;
-      }
-      const verdictColor = r.verdict==='pursue' ? 'var(--turf)' : r.verdict==='pass' ? 'var(--danger)' : 'var(--amber)';
-      const verdictLabel = r.verdict==='pursue' ? 'Worth pursuing' : r.verdict==='pass' ? 'Not a priority' : 'Depends';
-      const offerHtml = r.offer
-        ? `<div class="trade-sides" style="margin-top:8px;">
-            <div class="trade-side"><div class="trade-side-label">Consider offering</div>${r.offer.give.name} (${r.offer.givePos}, rank ${r.offer.give.rank})</div>
-            <div class="trade-arrow">⇄</div>
-            <div class="trade-side"><div class="trade-side-label">Target</div>${r.player.name} (${r.player.pos}, rank ${r.player.rank})</div>
-          </div>`
-        : '';
-      return `<div class="trade-card">
-        <div class="trade-card-partner">${r.player.name} <span class="pos-pill">${r.player.pos}</span> — owned by ${r.partnerName}</div>
-        <div class="tag" style="background:transparent; border:1px solid ${verdictColor}; color:${verdictColor};">${verdictLabel}</div>
-        <div class="trade-rationale">${r.rationale}</div>
-        ${offerHtml}
-      </div>`;
-    }).join('');
-  }
-
-  document.getElementById('analyzeTradeBlockBtn').addEventListener('click', function(){
-    if(!league || league.myRosterId==null){ alert('Connect your league and select your team first.'); return; }
-    const text = document.getElementById('tradeBlockInput').value;
-    const names = parseTradeBlockNames(text);
-    if(!names.length){ alert('Paste at least one player name first.'); return; }
-    const results = names.map(analyzeTradeBlockPlayer);
-    renderTradeBlockAnalysis(results);
-  });
 
   /* ---------------- Integrity checks — run every render, catch structural bugs automatically ---------------- */
   function runIntegrityChecks(){
@@ -2719,7 +3114,6 @@
     renderMyBench();
     renderTheirBench();
     renderFreeAgents();
-    renderFreeAgentUpgrades();
     renderTradeSuggestions();
     renderAiAnalysis();
   }
@@ -3073,7 +3467,11 @@ Include one "lineup" entry for every slot listed above. Only include a "decision
       lines.push('No synced opponent for this week yet.');
     }
 
-    const { bench: myBench } = computeBestLineup(league.myRosterId, week);
+    // Real live Sleeper bench — not computeBestLineup()'s suggested bench,
+    // which can disagree with your actual lineup and would otherwise feed
+    // the AI a false premise about who's actually sitting.
+    const myLiveStarterIds = new Set(getLiveStarters(league.myRosterId, week).filter(p=>!p._empty).map(p=>p.sleeperId));
+    const myBench = enrichRoster(league.myRosterId).filter(p => !myLiveStarterIds.has(p.sleeperId));
     if(myBench.length){
       lines.push('\nYour bench:');
       myBench.forEach(p=>{
@@ -3081,10 +3479,10 @@ Include one "lineup" entry for every slot listed above. Only include a "decision
       });
     }
 
-    const agents = computeFreeAgents().slice(0, 15);
+    const agents = computeFreeAgents().filter(a=>a.verdict!=='watch').slice(0, 15);
     if(agents.length){
-      lines.push('\nTop available free agents (unrostered anywhere in the league):');
-      agents.forEach(a=> lines.push(`- ${a.name} (${a.pos}, ${a.team||'?'})`));
+      lines.push('\nTop available free agents (unrostered anywhere in the league, ranked by value over replacement at their position, verdict = Add now/Streamer/Stash):');
+      agents.forEach(a=> lines.push(`- ${a.name} (${a.pos}, ${a.team||'?'}${a.opponent?`, ${a.isHome?'vs':'@'} ${a.opponent}`:''}${a.projPts!=null?`, proj ${a.projPts}pts`:''}${a.trendingAddCount>=500?`, trending +${a.trendingAddCount} adds (24h)`:''}${a.injury==='LT'?', long-term injury':a.injury==='Q'?', questionable':''}) — ${VERDICT_LABELS[a.verdict]}: ${a.rationale}`));
     }
 
     return lines.join('\n');
@@ -3226,6 +3624,7 @@ Include one "lineup" entry for every slot listed above. Only include a "decision
         document.getElementById('setup').style.display='none';
         document.getElementById('app').classList.add('active');
         loadPlayerDBFromCache();
+        loadTrendingFromCache();
         switchSection(activeSection);
         renderAll();
         alert('Settings loaded.');
@@ -3243,8 +3642,21 @@ Include one "lineup" entry for every slot listed above. Only include a "decision
     document.getElementById('setup').style.display='none';
     document.getElementById('app').classList.add('active');
     loadPlayerDBFromCache();
+    loadTrendingFromCache();
     switchSection(activeSection);
     renderAll();
+    // If you're reopening the app in a later week than you last synced, nudge
+    // the selector to the real current week rather than leaving it on the
+    // stale one — this is what was making projections look out of date.
+    if(league){
+      fetchCurrentNflWeek().then(wk=>{
+        if(wk && wk !== league.week){
+          document.getElementById('weekSelector').value = wk;
+          const statusEl = document.getElementById('weeklySyncStatus');
+          if(statusEl && !statusEl.textContent) statusEl.textContent = `It's currently NFL Week ${wk} — click "Sync this week" to update.`;
+        }
+      });
+    }
   } else {
     showStep(1);
   }
